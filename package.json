@@ -1,0 +1,67 @@
+{
+  "name": "@questdb/mcp-bridge",
+  "version": "0.1.0",
+  "description": "MCP bridge that exposes the QuestDB Web Console notebook to external coding agents (Claude Code, Codex) over a local WebSocket.",
+  "license": "Apache-2.0",
+  "author": "QuestDB",
+  "homepage": "https://github.com/questdb/mcp-bridge",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/questdb/mcp-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/questdb/mcp-bridge/issues"
+  },
+  "keywords": [
+    "mcp",
+    "questdb",
+    "claude",
+    "codex",
+    "model-context-protocol",
+    "notebook",
+    "sql"
+  ],
+  "type": "module",
+  "bin": {
+    "questdb-mcp-bridge": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "rimraf dist && tsc -p tsconfig.build.json && cp -R src/consts dist/consts && chmod +x dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "sync-tools": "node src/scripts/sync-tools.js",
+    "prepublishOnly": "yarn lint && yarn typecheck && yarn build && yarn test"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.2"
+  },
+  "packageManager": "yarn@1.22.22",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "~1.29.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.10",
+    "eslint": "^10.0.0",
+    "globals": "^17.0.0",
+    "prettier": "^3.3.0",
+    "rimraf": "^6.0.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^2.1.0"
+  }
+}

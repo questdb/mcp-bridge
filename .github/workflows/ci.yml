@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - name: Verify src/consts/shared-definitions.json matches questdb/ui
+        env:
+          UPSTREAM_REPO: questdb/ui
+          UPSTREAM_REF: main
+          UPSTREAM_PATH: src/consts/shared-definitions.json
+        run: |
+          UPSTREAM_URL="https://raw.githubusercontent.com/${UPSTREAM_REPO}/${UPSTREAM_REF}/${UPSTREAM_PATH}"
+          curl -fsSL "$UPSTREAM_URL" -o /tmp/upstream-shared-definitions.json
+          LOCAL_SHA=$(sha256sum src/consts/shared-definitions.json | awk '{print $1}')
+          UPSTREAM_SHA=$(sha256sum /tmp/upstream-shared-definitions.json | awk '{print $1}')
+          if [ "$LOCAL_SHA" != "$UPSTREAM_SHA" ]; then
+            echo "::error::shared-definitions.json drifted from ${UPSTREAM_REPO}@${UPSTREAM_REF}"
+            echo "  local:    $LOCAL_SHA"
+            echo "  upstream: $UPSTREAM_SHA"
+            diff -u src/consts/shared-definitions.json /tmp/upstream-shared-definitions.json | head -200 || true
+            exit 1
+          fi
+      - run: yarn typecheck
+      - run: yarn lint
+      - run: yarn build
+      - run: yarn test
