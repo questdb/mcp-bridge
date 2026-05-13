@@ -319,6 +319,60 @@ describe("BridgeSession — tool calls", () => {
     expect(out.content[0].text).toMatch(/connect_web_console/)
   })
 
+  it("aborts in-flight tool_call when caller signal fires, sends cancel to browser", async () => {
+    const { session } = makeSession({ getDeadlineMs: () => null })
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    const ac = new AbortController()
+    const result = session.callBrowserTool("list_cells", {}, ac.signal)
+    const call = browser.sent.find((m) => m.type === "tool_call")
+    expect(call).toBeTruthy()
+    ac.abort()
+    const out = await result
+    expect(out.isError).toBe(true)
+    expect(out.content[0].text).toMatch(/cancelled/)
+    const cancel = browser.sent.find((m) => m.type === "cancel")
+    expect(cancel).toBeTruthy()
+  })
+
+  it("short-circuits to cancelled when caller signal is already aborted", async () => {
+    const { session } = makeSession({ getDeadlineMs: () => null })
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    const ac = new AbortController()
+    ac.abort()
+    const out = await session.callBrowserTool("list_cells", {}, ac.signal)
+    expect(out.isError).toBe(true)
+    expect(out.content[0].text).toMatch(/cancelled/)
+    expect(browser.sent.find((m) => m.type === "tool_call")).toBeUndefined()
+  })
+
+  it("does not fire abort handler after tool_result resolves the call", async () => {
+    const { session } = makeSession({ getDeadlineMs: () => null })
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    const ac = new AbortController()
+    const result = session.callBrowserTool("list_cells", {}, ac.signal)
+    const call = browser.sent.find((m) => m.type === "tool_call")
+    if (call?.type !== "tool_call") throw new Error("no tool_call")
+    session.handleMessage({
+      v: MCP_BRIDGE_VERSION,
+      type: "tool_result",
+      requestId: call.requestId,
+      content: [{ type: "text", text: "done" }],
+      isError: false,
+    })
+    const out = await result
+    expect(out.isError).toBe(false)
+    expect(out.content[0].text).toBe("done")
+    ac.abort()
+    // No "cancel" message — call already finished.
+    expect(browser.sent.find((m) => m.type === "cancel")).toBeUndefined()
+  })
+
   it("silently drops tool_result for unknown requestId", () => {
     const { session } = makeSession()
     const browser = makeFakeBrowser()

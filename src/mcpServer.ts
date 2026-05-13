@@ -125,7 +125,7 @@ export const startMcpServer = async ({ session }: StartMcpServerArgs) => {
     tools: STATIC_TOOL_LIST,
   }))
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     const name = req.params.name
     const args = req.params.arguments ?? {}
 
@@ -143,7 +143,7 @@ export const startMcpServer = async ({ session }: StartMcpServerArgs) => {
         }
       }
 
-      const result = await session.callBrowserTool(name, args)
+      const result = await session.callBrowserTool(name, args, extra.signal)
       return {
         content: result.content,
         isError: result.isError === true,

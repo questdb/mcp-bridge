@@ -47,6 +47,7 @@ type InflightCall = {
   resolve: (result: ToolResultPayload) => void
   reject: (err: Error) => void
   deadlineTimer: ReturnType<typeof setTimeout> | null
+  abortCleanup: (() => void) | null
 }
 
 type PairWaiter = {
@@ -183,6 +184,7 @@ export class BridgeSession {
   callBrowserTool(
     toolName: string,
     args: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<ToolResultPayload> {
     if (this.state !== "S1" || !this.browser) {
       return Promise.resolve({
@@ -201,6 +203,14 @@ export class BridgeSession {
         isError: true,
       })
     }
+    if (signal?.aborted) {
+      return Promise.resolve({
+        content: [
+          { type: "text", text: "cancelled: tool call cancelled before dispatch" },
+        ],
+        isError: true,
+      })
+    }
     const requestId = generateRequestId()
     const deadlineMs = this.config.getDeadlineMs(toolName)
     return new Promise<ToolResultPayload>((resolve, reject) => {
@@ -210,10 +220,13 @@ export class BridgeSession {
         resolve,
         reject,
         deadlineTimer: null,
+        abortCleanup: null,
       }
       if (typeof deadlineMs === "number") {
         inflight.deadlineTimer = setTimeout(() => {
+          if (!this.inflight.has(requestId)) return
           this.inflight.delete(requestId)
+          clearInflight(inflight)
           this.browser?.send({
             v: MCP_BRIDGE_VERSION,
             type: "cancel",
@@ -226,6 +239,27 @@ export class BridgeSession {
             isError: true,
           })
         }, deadlineMs)
+      }
+      if (signal) {
+        const onAbort = () => {
+          if (!this.inflight.has(requestId)) return
+          this.inflight.delete(requestId)
+          clearInflight(inflight)
+          this.browser?.send({
+            v: MCP_BRIDGE_VERSION,
+            type: "cancel",
+            requestId,
+          } satisfies CancelMessage)
+          resolve({
+            content: [
+              { type: "text", text: "cancelled: caller cancelled tool call" },
+            ],
+            isError: true,
+          })
+        }
+        signal.addEventListener("abort", onAbort, { once: true })
+        inflight.abortCleanup = () =>
+          signal.removeEventListener("abort", onAbort)
       }
       this.inflight.set(requestId, inflight)
       const call: ToolCallMessage = {
@@ -451,6 +485,10 @@ const clearInflight = (call: InflightCall): void => {
   if (call.deadlineTimer) {
     clearTimeout(call.deadlineTimer)
     call.deadlineTimer = null
+  }
+  if (call.abortCleanup) {
+    call.abortCleanup()
+    call.abortCleanup = null
   }
 }
 

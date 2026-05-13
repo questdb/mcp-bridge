@@ -16,7 +16,7 @@ const DEFAULT_CONSOLE_ORIGIN = "http://127.0.0.1:9000"
 const PER_TOOL_TIMEOUT_MS: Record<string, number> = {
   run_cell: 300_000,
   run_query: 300_000,
-  apply_notebook_state: 60_000,
+  apply_notebook_state: 300_000,
   create_notebook: 15_000,
   add_cell: 15_000,
   update_cell: 15_000,
