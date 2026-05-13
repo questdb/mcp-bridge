@@ -194,7 +194,7 @@ export class BridgeSession {
             text:
               `BRIDGE_NOT_PAIRED: This tool requires a paired QuestDB Web ` +
               `Console.\n` +
-              `Recovery: call \`connect_web_console\` to get a pairing URL ` +
+              `Recovery: call \`get_pairing_credentials\` to get a pairing URL ` +
               `(present BOTH the deep link AND the manual ws_url + token to ` +
               `the user), then call \`wait_for_pairing\` until ` +
               `{paired:true}, then retry this tool.`,

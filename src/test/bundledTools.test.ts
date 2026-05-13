@@ -95,12 +95,12 @@ describe("bundledTools", () => {
       const tool = BUNDLED_FUNCTIONAL_TOOLS.find((t) => t.name === name)
       if (!tool) throw new Error(`${name} missing`)
       expect(tool.description).toMatch(/BRIDGE_NOT_PAIRED/)
-      expect(tool.description).toMatch(/connect_web_console/)
+      expect(tool.description).toMatch(/get_pairing_credentials/)
     }
   })
 
   it("does NOT include the pairing tools (those are mcpServer's job)", () => {
-    expect(BUNDLED_TOOL_NAMES.has("connect_web_console")).toBe(false)
+    expect(BUNDLED_TOOL_NAMES.has("get_pairing_credentials")).toBe(false)
     expect(BUNDLED_TOOL_NAMES.has("wait_for_pairing")).toBe(false)
   })
 

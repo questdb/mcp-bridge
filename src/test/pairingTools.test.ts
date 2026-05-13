@@ -25,7 +25,7 @@ describe("PAIRING_TOOLS schema", () => {
   it("declares the two pairing tools", () => {
     expect(PAIRING_TOOLS).toHaveLength(2)
     expect(PAIRING_TOOLS.map((t) => t.name).sort()).toEqual([
-      "connect_web_console",
+      "get_pairing_credentials",
       "wait_for_pairing",
     ])
   })
@@ -40,7 +40,7 @@ describe("PAIRING_TOOLS schema", () => {
   })
 
   it("isPairingToolName narrows correctly", () => {
-    expect(isPairingToolName("connect_web_console")).toBe(true)
+    expect(isPairingToolName("get_pairing_credentials")).toBe(true)
     expect(isPairingToolName("wait_for_pairing")).toBe(true)
     expect(isPairingToolName("add_cell")).toBe(false)
   })
@@ -52,7 +52,7 @@ describe("PAIRING_TOOLS schema", () => {
   })
 })
 
-describe("connect_web_console handler", () => {
+describe("get_pairing_credentials handler", () => {
   it("returns paired:false JSON when unpaired (deepLink + wsUrl + token + nextStep, camelCase)", () => {
     const { handleConnectWebConsole } = createPairingToolHandlers(makeCtx())
     const out = handleConnectWebConsole()
@@ -62,6 +62,31 @@ describe("connect_web_console handler", () => {
     expect(parsed.wsUrl).toBe("ws://127.0.0.1:57123")
     expect(parsed.token).toBe("abcdefghijklmnopqrst1234")
     expect(parsed.nextStep).toBe("wait_for_pairing")
+  })
+
+  it("includes a pre-rendered userMessage that shows BOTH the deep link and ws_url+token", () => {
+    const { handleConnectWebConsole } = createPairingToolHandlers(makeCtx())
+    const out = handleConnectWebConsole()
+    const parsed = JSON.parse(out.content[0].text) as Record<string, unknown>
+    expect(typeof parsed.userMessage).toBe("string")
+    const msg = parsed.userMessage as string
+    expect(msg).toContain("mcp-pair=1")
+    expect(msg).toContain("ws://127.0.0.1:57123")
+    expect(msg).toContain("abcdefghijklmnopqrst1234")
+  })
+
+  it("includes assistantNextActions ordered: show user first, then call wait_for_pairing", () => {
+    const { handleConnectWebConsole } = createPairingToolHandlers(makeCtx())
+    const out = handleConnectWebConsole()
+    const parsed = JSON.parse(out.content[0].text) as Record<string, unknown>
+    expect(Array.isArray(parsed.assistantNextActions)).toBe(true)
+    const actions = parsed.assistantNextActions as string[]
+    expect(actions.length).toBeGreaterThanOrEqual(2)
+    // The "show user" instruction must come before the "call wait_for_pairing" instruction.
+    const showIdx = actions.findIndex((a) => /write a message to the user/i.test(a))
+    const waitIdx = actions.findIndex((a) => /wait_for_pairing/i.test(a))
+    expect(showIdx).toBeGreaterThanOrEqual(0)
+    expect(waitIdx).toBeGreaterThan(showIdx)
   })
 
   it("returns paired:true JSON with consoleOrigin + permissions (camelCase) when already paired", () => {
@@ -146,6 +171,32 @@ describe("wait_for_pairing handler", () => {
     expect(parsed.warning).toBeUndefined()
   })
 
+  it("resolves with paired:true when the user approves AFTER wait_for_pairing has been called (wait-then-approve)", async () => {
+    // Simulates: agent calls wait_for_pairing while state is S0; user
+    // approves the consent modal mid-wait → bridge hello → pairWaiters
+    // drain → waitForPair Promise resolves with the snapshot.
+    const ctx = makeCtx({
+      // getPairingState is called at the top of handleWaitForPairing
+      // BEFORE waitForPair — state is still S0 there, no fast-path.
+      getPairingState: () => ({ paired: false }),
+      waitForPair: () =>
+        Promise.resolve({
+          paired: true,
+          sessionId: "s1",
+          consoleOrigin: "http://127.0.0.1:9000",
+          permissions: { read: true, write: true },
+          versionMismatch: null,
+        }),
+    })
+    const { handleWaitForPairing } = createPairingToolHandlers(ctx)
+    const out = await handleWaitForPairing({})
+    const parsed = JSON.parse(out.content[0].text) as Record<string, unknown>
+    expect(parsed.paired).toBe(true)
+    expect(parsed.consoleOrigin).toBe("http://127.0.0.1:9000")
+    expect(parsed.permissions).toEqual({ read: true, write: true })
+    expect(parsed.warning).toBeUndefined()
+  })
+
   it("attaches a warning string when wait_for_pairing resolves with a version mismatch", async () => {
     const ctx = makeCtx({
       waitForPair: () =>
@@ -180,6 +231,9 @@ describe("wait_for_pairing handler", () => {
     expect(typeof parsed.hint).toBe("string")
     expect(parsed.retry_count).toBeUndefined()
     expect(parsed.max_retries_hint).toBeUndefined()
+    // Hint should remind the assistant to verify it has shown the user
+    // the credentials — the most common cause of repeated timeouts.
+    expect(parsed.hint as string).toMatch(/credentials|deepLink|wsUrl|token/i)
   })
 
   it("increments retryCount across timeouts and resets on success", async () => {

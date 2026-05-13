@@ -5,15 +5,21 @@ import type {
 } from "./types.js"
 
 export const CONNECT_TOOL: ToolSchema = {
-  name: "connect_web_console",
+  name: "get_pairing_credentials",
   description:
-    "Begin a QuestDB Web Console pairing session. Returns a one-click " +
-    "deep link AND a separate WebSocket URL + token (for manual entry). " +
-    "Idempotent — repeated calls during an in-flight pairing return the " +
-    "same credentials; if already paired, returns a success message. " +
-    "Show the credentials to the user, then call `wait_for_pairing` in " +
-    "the same turn (see the server-level pairing flow instructions for " +
-    "the full sequence).",
+    "Get the credentials the user needs to pair their browser with this " +
+    "MCP bridge — calling this tool does NOT itself pair anything. It " +
+    "returns a deep_link, ws_url, token, AND a pre-rendered `userMessage` " +
+    "with the exact text to show the user. " +
+    "REQUIRED FLOW — do all three in the defined: " +
+    "(1) call this tool, " +
+    "(2) write a message to the user containing the `userMessage` text " +
+    "(or your own equivalent showing deep_link + ws_url + token), " +
+    "(3) call `wait_for_pairing`. " +
+    "DO NOT skip step (2). Calling `wait_for_pairing` without first " +
+    "showing the credentials guarantees a timeout — the user has no " +
+    "credentials to enter, so they cannot pair. " +
+    "Idempotent during pairing; returns paired:true if already paired.",
   inputSchema: {
     type: "object",
     properties: {},
@@ -24,9 +30,15 @@ export const CONNECT_TOOL: ToolSchema = {
 export const WAIT_TOOL: ToolSchema = {
   name: "wait_for_pairing",
   description:
-    "Poll for completion of a QuestDB Web Console pairing started by " +
-    "`connect_web_console`. Blocks for `timeout_ms` (default 50 s, max " +
-    "50 s — sized to fit under typical MCP client tool-call timeouts). " +
+    "Poll for completion of pairing started by `get_pairing_credentials`. " +
+    "PREREQUISITE: you have already written a message to the user " +
+    "containing the deep_link + ws_url + token from " +
+    "`get_pairing_credentials`'s last response. If you have NOT yet shown " +
+    "those credentials, do that first — calling this tool without " +
+    "showing credentials only burns 50 s of polling while the user " +
+    "sees nothing actionable. " +
+    "Blocks for `timeout_ms` (default 50 s, max 50 s — sized to fit " +
+    "under typical MCP client tool-call timeouts). " +
     "Returns `{paired:true, consoleOrigin, permissions:{read,write}}` " +
     "on success, or `{paired:false, reason:'timeout', retryCount, " +
     "maxRetriesHint:10}` on timeout — call again to keep waiting (up " +
@@ -55,7 +67,10 @@ export const WAIT_TOOL: ToolSchema = {
   },
 }
 
-const PAIRING_TOOL_NAMES = ["connect_web_console", "wait_for_pairing"] as const
+const PAIRING_TOOL_NAMES = [
+  "get_pairing_credentials",
+  "wait_for_pairing",
+] as const
 type PairingToolName = (typeof PAIRING_TOOL_NAMES)[number]
 
 export const isPairingToolName = (name: string): name is PairingToolName =>
@@ -131,6 +146,13 @@ export const createPairingToolHandlers = (
     }
     const url = ctx.buildDeepLink()
     const { wsUrl, token } = ctx.getCredentials()
+    const userMessage =
+      `To pair with the QuestDB Web Console:\n\n` +
+      `  Option 1 — click this link and follow the instructions: ${url}\n\n` +
+      `  Option 2 — open the QuestDB Web Console, click the MCP connection status at\n` +
+      `  the bottom of the screen, and enter these values manually:\n` +
+      `    WebSocket URL: ${wsUrl}\n` +
+      `    Token:         ${token}\n`
     return {
       content: [
         {
@@ -141,6 +163,19 @@ export const createPairingToolHandlers = (
             wsUrl,
             token,
             nextStep: "wait_for_pairing",
+            // Pre-rendered text the assistant SHOULD show the user. Smaller
+            // models often skim past prose instructions about "show these
+            // to the user" — having the rendered message inline makes the
+            // next step trivially copy-pasteable.
+            userMessage,
+            // Explicit ordered steps in case the model still skips ahead.
+            // Phrased as imperatives because that's what weaker models
+            // follow most reliably.
+            assistantNextActions: [
+              "Write a message to the user containing the `userMessage` text above (or your own equivalent — the user must see deepLink AND wsUrl+token).",
+              "Then, in the SAME turn, call wait_for_pairing.",
+              "Do NOT skip step 1. Calling wait_for_pairing before showing the user the credentials only burns 50s — the user cannot pair without seeing them.",
+            ],
           }),
         },
       ],
@@ -220,8 +255,14 @@ export const createPairingToolHandlers = (
             maxRetriesHint: RECOMMENDED_MAX_RETRIES,
             hint:
               "Call wait_for_pairing again to keep waiting. The user may " +
-              "still be authenticating. Recommend giving up after ~10 retries " +
-              "(~8 minutes) and asking the user to ping back when ready.",
+              "still be authenticating. " +
+              "CHECK FIRST: did you write a message to the user containing " +
+              "the deepLink + wsUrl + token from your last get_pairing_credentials " +
+              "response? If not, do that NOW — the user cannot pair without " +
+              "seeing those credentials, and continuing to poll will just " +
+              "keep timing out. " +
+              "Recommend giving up after ~10 retries (~8 minutes) and asking " +
+              "the user to ping back when ready.",
           }),
         },
       ],

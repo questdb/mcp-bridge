@@ -316,7 +316,7 @@ describe("BridgeSession — tool calls", () => {
     const out = await session.callBrowserTool("list_cells", {})
     expect(out.isError).toBe(true)
     expect(out.content[0].text).toMatch(/BRIDGE_NOT_PAIRED/)
-    expect(out.content[0].text).toMatch(/connect_web_console/)
+    expect(out.content[0].text).toMatch(/get_pairing_credentials/)
   })
 
   it("aborts in-flight tool_call when caller signal fires, sends cancel to browser", async () => {
