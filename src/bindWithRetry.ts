@@ -1,3 +1,5 @@
+import type { Log } from "./types.js"
+
 export type AttemptListenFn = (
   port: number,
 ) => Promise<{ stop: () => Promise<void> }>
@@ -11,7 +13,7 @@ export const bindWithRetry = async (params: {
   isPinned: boolean
   attemptListen: AttemptListenFn
   findFreePort: () => Promise<number>
-  log?: (...args: unknown[]) => void
+  log?: Log
 }): Promise<{ stop: () => Promise<void>; port: number }> => {
   const { port, isPinned, attemptListen, findFreePort, log: logger } = params
   try {
@@ -27,7 +29,7 @@ export const bindWithRetry = async (params: {
       ;(tagged as Error & { code?: string }).code = "port-pinned-in-use"
       throw tagged
     }
-    logger?.(`port ${port} taken before bind; retrying with a fresh port`)
+    logger?.("WARN", `port ${port} taken before bind; retrying with a fresh port`)
     const nextPort = await findFreePort()
     try {
       const handle = await attemptListen(nextPort)

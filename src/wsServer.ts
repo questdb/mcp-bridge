@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http"
 import { WebSocketServer, WebSocket } from "ws"
 import { tokensMatch } from "./sessionStore.js"
-import { WS_CLOSE_CODES, type AnyMessage } from "./types.js"
+import { WS_CLOSE_CODES, type AnyMessage, type Log } from "./types.js"
 import type { BridgeSession, BrowserConn } from "./bridgeSession.js"
 
 type WsServerConfig = {
@@ -9,7 +9,7 @@ type WsServerConfig = {
   token: string
   allowedOrigins: string[]
   session: BridgeSession
-  log?: (...args: unknown[]) => void
+  log?: Log
   onFatalError?: (kind: FatalErrorKind, err: Error) => void
 }
 
@@ -127,6 +127,7 @@ export const startWsServer = (config: WsServerConfig) => {
         if (ws.readyState !== WebSocket.OPEN) return
         if (ws.bufferedAmount > WS_OUTBOUND_BUFFER_LIMIT_BYTES) {
           config.log?.(
+            "WARN",
             `outbound buffer overflow (${ws.bufferedAmount} bytes); terminating`,
           )
           try {
@@ -219,6 +220,7 @@ export const startWsServer = (config: WsServerConfig) => {
         const code = (err as Error & { code?: string }).code
         if (code === "EMFILE" || code === "ENFILE") {
           config.log?.(
+            "ERROR",
             `httpServer FATAL: ${code} (file descriptor exhaustion).`,
           )
           if (config.onFatalError) {
@@ -226,11 +228,12 @@ export const startWsServer = (config: WsServerConfig) => {
             return
           }
           config.log?.(
+            "WARN",
             "  No onFatalError handler registered; continuing in degraded state.",
           )
           return
         }
-        config.log?.("httpServer runtime error:", err)
+        config.log?.("ERROR", "httpServer runtime error:", err)
       })
       resolve({
         stop: () =>

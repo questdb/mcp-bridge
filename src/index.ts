@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { writeSync } from "node:fs"
 import { findFreePort, generateToken } from "./sessionStore.js"
 import { BridgeSession } from "./bridgeSession.js"
 import { MCP_BRIDGE_VERSION } from "./protocolVersion.js"
@@ -10,6 +9,7 @@ import {
 } from "./wsServer.js"
 import { startMcpServer } from "./mcpServer.js"
 import { bindWithRetry, type AttemptListenFn } from "./bindWithRetry.js"
+import { Logger } from "./logger.js"
 
 const DEFAULT_CONSOLE_ORIGIN = "http://127.0.0.1:9000"
 
@@ -38,22 +38,8 @@ const PER_TOOL_TIMEOUT_MS: Record<string, number> = {
   get_recent_user_actions: 15_000,
 }
 
-const log = (...args: unknown[]): void => {
-  console.error("[mcp-bridge]", ...args)
-}
-
-const writeStderrSync = (line: string): void => {
-  try {
-    writeSync(process.stderr.fd, line)
-  } catch (err) {
-    void err
-  }
-}
-
-const fatal = (msg: string, code = 1): never => {
-  writeStderrSync(`[mcp-bridge] FATAL: ${msg}\n`)
-  process.exit(code)
-}
+const logger = new Logger()
+const { log, fatal } = logger
 
 const main = async () => {
   const portRaw = process.env.MCP_BRIDGE_PORT
@@ -95,7 +81,7 @@ const main = async () => {
   let stopWs: (() => Promise<void>) | null = null
 
   let fatalShutdown: (kind: string, err: Error) => void = (kind, err) => {
-    log(`fatal (${kind}) before shutdown wired:`, err)
+    log("ERROR", `fatal (${kind}) before shutdown wired:`, err)
     process.exit(3)
   }
   const attemptListen: AttemptListenFn = (p) =>
@@ -125,13 +111,16 @@ const main = async () => {
     fatal(err instanceof Error ? err.message : String(err), 1)
   }
 
-  const mcp = await startMcpServer({ session })
+  const mcp = await startMcpServer({ session, log })
 
-  log(`@questdb/mcp-bridge v${MCP_BRIDGE_VERSION}`)
-  log(`listening on ws://127.0.0.1:${port}`)
-  log(`console origin: ${consoleOrigin}`)
-  log(`pair the QuestDB Web Console at:`)
-  log(`  ${session.buildDeepLink()}`)
+  log("INFO", `@questdb/mcp-bridge v${MCP_BRIDGE_VERSION}`)
+  log("INFO", `listening on ws://127.0.0.1:${port}`)
+  log("INFO", `console origin: ${consoleOrigin}`)
+  log(
+    "INFO",
+    `log file: ${logger.getFilePath() ?? "(disabled — stderr only)"}`,
+  )
+  log("INFO", `log level: ${logger.getLevelName()}`)
 
   let shuttingDown = false
   let exitCode = 0
@@ -169,7 +158,7 @@ const main = async () => {
   }
 
   fatalShutdown = (kind, err) => {
-    log(`fatal (${kind}):`, err.message)
+    log("ERROR", `fatal (${kind}):`, err.message)
     if (kind === "fd-exhaustion") {
       exitCode = 3
     }
@@ -184,6 +173,5 @@ const main = async () => {
 
 main().catch((err: unknown) => {
   const text = err instanceof Error ? (err.stack ?? err.message) : String(err)
-  writeStderrSync(`[mcp-bridge] startup error: ${text}\n`)
-  process.exit(1)
+  fatal(`startup error: ${text}`, 1)
 })

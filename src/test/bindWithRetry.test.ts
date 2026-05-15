@@ -55,6 +55,7 @@ describe("bindWithRetry", () => {
     expect(listenCalls).toEqual([5000, 6000])
     expect(findFreePort).toHaveBeenCalledTimes(1)
     expect(log).toHaveBeenCalledWith(
+      "WARN",
       "port 5000 taken before bind; retrying with a fresh port",
     )
   })

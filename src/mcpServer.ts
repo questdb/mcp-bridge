@@ -17,10 +17,27 @@ import {
 import { BUNDLED_FUNCTIONAL_TOOLS } from "./bundledTools.js"
 import { MCP_BRIDGE_VERSION } from "./protocolVersion.js"
 import type { BridgeSession } from "./bridgeSession.js"
-import type { ToolResultPayload } from "./types.js"
+import type { Log, ToolResultPayload } from "./types.js"
 
 const SERVER_NAME = "questdb-mcp-bridge"
 const SERVER_VERSION = MCP_BRIDGE_VERSION
+
+const safePairingCredentialsSummary = (
+  content: ToolResultPayload["content"],
+): string | null => {
+  try {
+    const text = content[0]?.text
+    if (typeof text !== "string") return null
+    const parsed = JSON.parse(text) as Record<string, unknown>
+    return JSON.stringify({
+      paired: parsed.paired,
+      consoleOrigin: parsed.consoleOrigin,
+      permissions: parsed.permissions,
+    })
+  } catch {
+    return null
+  }
+}
 
 const SERVER_INSTRUCTIONS = [
   "QuestDB Web Console MCP — author interactive SQL notebooks and dashboards in the user's running QuestDB Web Console.",
@@ -95,9 +112,13 @@ const SERVER_INSTRUCTIONS = [
 
 type StartMcpServerArgs = {
   session: BridgeSession
+  log?: Log
 }
 
-export const startMcpServer = async ({ session }: StartMcpServerArgs) => {
+export const startMcpServer = async ({
+  session,
+  log,
+}: StartMcpServerArgs) => {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
@@ -154,26 +175,43 @@ export const startMcpServer = async ({ session }: StartMcpServerArgs) => {
     const name = req.params.name
     const args = req.params.arguments ?? {}
 
+    log?.("INFO", `tool_call: ${name}`)
+    log?.("DEBUG", `  args: ${JSON.stringify(args) ?? "undefined"}`)
+
     try {
+      let result: ToolResultPayload
       if (isPairingToolName(name)) {
-        let result: ToolResultPayload
         if (name === "get_pairing_credentials") {
           result = handleConnectWebConsole()
         } else {
           result = await handleWaitForPairing(args)
         }
-        return {
-          content: result.content,
-          isError: result.isError === true,
-        }
+      } else {
+        result = await session.callBrowserTool(name, args, extra.signal)
       }
-
-      const result = await session.callBrowserTool(name, args, extra.signal)
+      const isError = result.isError === true
+      log?.(
+        isError ? "ERROR" : "INFO",
+        `tool_result: ${name} ${isError ? "error" : "ok"}`,
+      )
+      if (name === "get_pairing_credentials") {
+        const summary = safePairingCredentialsSummary(result.content)
+        if (summary !== null) {
+          log?.("DEBUG", `  content: ${summary}`)
+        }
+      } else {
+        log?.("DEBUG", `  content: ${JSON.stringify(result.content)}`)
+      }
       return {
         content: result.content,
-        isError: result.isError === true,
+        isError,
       }
-    } catch {
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      log?.("ERROR", `tool_result: ${name} internal_error ${errMsg}`)
+      if (err instanceof Error && err.stack) {
+        log?.("DEBUG", `  stack: ${err.stack}`)
+      }
       return {
         content: [
           {

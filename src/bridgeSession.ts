@@ -5,6 +5,7 @@ import type {
   CancelMessage,
   HelloAckMessage,
   HelloMessage,
+  Log,
   MCPPermissions,
   PingMessage,
   PongMessage,
@@ -38,7 +39,7 @@ export type BridgeSessionConfig = {
   getPort: () => number
   consoleOrigin: string
   getDeadlineMs: (toolName: string) => number | null
-  log?: (...args: unknown[]) => void
+  log?: Log
 }
 
 type InflightCall = {
@@ -336,6 +337,7 @@ export class BridgeSession {
     this.browserTools = msg.tools
     this.browserPermissions = msg.permissions
     this.config.log?.(
+      "INFO",
       `browser paired: console=${msg.consoleOrigin} expectedBridge=${msg.expectedBridgeVersion} actualBridge=${MCP_BRIDGE_VERSION} ua=${msg.userAgent}`,
     )
 
@@ -397,7 +399,7 @@ export class BridgeSession {
     const elapsedMs = Number(
       (monotonicNs() - this.outstandingPing.sentAtNs) / 1_000_000n,
     )
-    this.config.log?.(`heartbeat: pong in ${elapsedMs}ms`)
+    this.config.log?.("DEBUG", `heartbeat: pong in ${elapsedMs}ms`)
     this.outstandingPing = null
     if (this.pongTimer) {
       clearTimeout(this.pongTimer)

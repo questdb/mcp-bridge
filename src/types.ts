@@ -1,3 +1,7 @@
+export type LogLevel = "ERROR" | "WARN" | "INFO" | "DEBUG"
+
+export type Log = (level: LogLevel, ...args: unknown[]) => void
+
 export type ToolSchema = {
   name: string
   description: string
