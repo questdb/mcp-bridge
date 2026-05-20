@@ -63,6 +63,7 @@ describe("bundledTools", () => {
       "buffer_id",
       "layout_mode",
       "maximized_cell_id",
+      "variables",
       "cells",
     ])
   })
