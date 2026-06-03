@@ -79,16 +79,10 @@ describe("bundledTools", () => {
       (t) => t.name === "set_cell_chart_config",
     )
     if (!tool) throw new Error("set_cell_chart_config missing")
-    expect(tool.inputSchema.required).toEqual([
-      "buffer_id",
-      "cell_id",
-      "type",
-      "name",
-      "x_column",
-      "y_columns",
-      "partition_by_column",
-      "ohlc",
-    ])
+    expect(tool.inputSchema.required).toEqual(["buffer_id", "cell_id"])
+    const props = tool.inputSchema.properties as Record<string, unknown>
+    const queries = props.queries as { items: { required: string[] } }
+    expect(queries.items.required).toEqual(["type"])
   })
 
   it("meta-tool descriptions carry the BRIDGE_NOT_PAIRED recovery prefix", () => {
