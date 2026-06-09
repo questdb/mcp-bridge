@@ -20,6 +20,7 @@ import type {
   PairingSnapshot,
   VersionMismatch,
 } from "./pairingTools.js"
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv"
 
 const HEARTBEAT_INTERVAL_MS = 5_000
 const PONG_TIMEOUT_MS = 10_000
@@ -27,6 +28,16 @@ const HELLO_TIMEOUT_MS = 10_000
 const MAX_PAIR_WAITERS = 32
 
 type SessionState = "S0" | "S1"
+
+// Validates a tool call's arguments against the input schema the browser
+// advertised for that tool. Args arrive verbatim from an untrusted MCP client,
+// and the Web Console renders/persists them without an error boundary, so a
+// wrong-typed field (e.g. a non-string cell value) could crash the editor. We
+// reject off-schema args here, at the trust boundary, against the LIVE schema
+// (no drift vs. the connected console). One Ajv instance is reused; compiled
+// validators are cached per tool and rebuilt on each pairing.
+type ArgValidator = (input: unknown) => { valid: boolean; errorMessage?: string }
+const schemaValidator = new AjvJsonSchemaValidator()
 
 export type BrowserConn = {
   send: (msg: AnyMessage) => void
@@ -78,6 +89,7 @@ export class BridgeSession {
   private sessionId: string | null = null
   private browserConsoleOrigin = ""
   private browserTools: ToolSchema[] = []
+  private toolValidators = new Map<string, ArgValidator>()
   private versionMismatch: VersionMismatch | null = null
   private browserPermissions: MCPPermissions = { read: true, write: true }
   private inflight = new Map<string, InflightCall>()
@@ -212,6 +224,23 @@ export class BridgeSession {
         isError: true,
       })
     }
+    const validate = this.toolValidators.get(toolName)
+    if (validate) {
+      const { valid, errorMessage } = validate(args)
+      if (!valid) {
+        return Promise.resolve({
+          content: [
+            {
+              type: "text",
+              text:
+                `VALIDATION_ERROR: arguments for \`${toolName}\` do not match ` +
+                `its input schema: ${errorMessage ?? "invalid arguments"}`,
+            },
+          ],
+          isError: true,
+        })
+      }
+    }
     const requestId = generateRequestId()
     const deadlineMs = this.config.getDeadlineMs(toolName)
     return new Promise<ToolResultPayload>((resolve, reject) => {
@@ -335,6 +364,7 @@ export class BridgeSession {
     this.sessionId = generateSessionId()
     this.browserConsoleOrigin = msg.consoleOrigin
     this.browserTools = msg.tools
+    this.rebuildToolValidators()
     this.browserPermissions = msg.permissions
     this.config.log?.(
       "INFO",
@@ -462,9 +492,24 @@ export class BridgeSession {
     this.transitionToS0()
   }
 
+  private rebuildToolValidators(): void {
+    this.toolValidators.clear()
+    for (const tool of this.browserTools) {
+      try {
+        this.toolValidators.set(
+          tool.name,
+          schemaValidator.getValidator(tool.inputSchema),
+        )
+      } catch {
+        // unvalidatable schema → skip (fail-open for that tool only)
+      }
+    }
+  }
+
   private transitionToS0(): void {
     this.state = "S0"
     this.browserTools = []
+    this.toolValidators.clear()
     this.sessionId = null
     for (const call of Array.from(this.inflight.values())) {
       clearInflight(call)

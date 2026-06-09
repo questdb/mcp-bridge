@@ -533,3 +533,85 @@ describe("BridgeSession — deep link", () => {
     expect(link).toContain("the-token")
   })
 })
+
+describe("BridgeSession — tool argument validation", () => {
+  const strictTools: ToolSchema[] = [
+    {
+      name: "update_cell",
+      description: "x",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          buffer_id: { type: "number" },
+          cell_id: { type: "string" },
+          value: { type: "string" },
+        },
+        required: ["buffer_id", "cell_id", "value"],
+      },
+    },
+  ]
+
+  const resolvePending = (
+    session: BridgeSession,
+    call: AnyMessage | undefined,
+  ) => {
+    if (call && call.type === "tool_call") {
+      session.handleMessage({
+        v: MCP_BRIDGE_VERSION,
+        type: "tool_result",
+        requestId: call.requestId,
+        content: [{ type: "text", text: "{}" }],
+        isError: false,
+      })
+    }
+  }
+
+  it("rejects args that violate the tool's input schema without relaying", async () => {
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session, "the-token", strictTools)
+
+    const res = await session.callBrowserTool("update_cell", {
+      buffer_id: 1,
+      cell_id: "c",
+      value: 123, // not a string
+    })
+
+    expect(res.isError).toBe(true)
+    expect(res.content[0]?.text).toMatch(/VALIDATION_ERROR/)
+    // nothing relayed to the browser (only the hello_ack was sent)
+    expect(browser.sent.some((m) => m.type === "tool_call")).toBe(false)
+  })
+
+  it("relays well-typed args to the browser", async () => {
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session, "the-token", strictTools)
+
+    const pending = session.callBrowserTool("update_cell", {
+      buffer_id: 1,
+      cell_id: "c",
+      value: "SELECT 1",
+    })
+    const call = browser.sent.find((m) => m.type === "tool_call")
+    expect(call).toBeDefined()
+    resolvePending(session, call)
+    expect((await pending).isError).toBe(false)
+  })
+
+  it("does not over-reject a tool advertised with a permissive schema", async () => {
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session) // default helloTools use { type: "object" }
+
+    const pending = session.callBrowserTool("list_cells", { anything: 1 })
+    const call = browser.sent.find((m) => m.type === "tool_call")
+    expect(call).toBeDefined()
+    resolvePending(session, call)
+    expect((await pending).isError).toBe(false)
+  })
+})

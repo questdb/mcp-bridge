@@ -5,8 +5,8 @@ import {
 } from "../bundledTools.js"
 
 describe("bundledTools", () => {
-  it("ships 28 functional tools (3 schema + 3 reference + 19 notebook + 1 query + 2 meta)", () => {
-    expect(BUNDLED_FUNCTIONAL_TOOLS).toHaveLength(28)
+  it("ships 30 functional tools (3 schema + 3 reference + 21 notebook + 1 query + 2 meta)", () => {
+    expect(BUNDLED_FUNCTIONAL_TOOLS).toHaveLength(30)
   })
 
   it("includes the schema tools", () => {
@@ -79,10 +79,27 @@ describe("bundledTools", () => {
       (t) => t.name === "set_cell_chart_config",
     )
     if (!tool) throw new Error("set_cell_chart_config missing")
-    expect(tool.inputSchema.required).toEqual(["buffer_id", "cell_id"])
+    // "Explicit-everything" patch convention (same as apply_notebook_state):
+    // every field is required but nullable — the agent passes null to preserve.
+    expect(tool.inputSchema.required).toEqual([
+      "buffer_id",
+      "cell_id",
+      "x_column",
+      "name",
+      "queries",
+      "right_axis",
+    ])
     const props = tool.inputSchema.properties as Record<string, unknown>
     const queries = props.queries as { items: { required: string[] } }
-    expect(queries.items.required).toEqual(["type"])
+    expect(queries.items.required).toEqual([
+      "type",
+      "y_columns",
+      "ohlc",
+      "partition_by_column",
+      "axis",
+      "enabled",
+      "name",
+    ])
   })
 
   it("meta-tool descriptions carry the BRIDGE_NOT_PAIRED recovery prefix", () => {
