@@ -26,6 +26,19 @@ const HEARTBEAT_INTERVAL_MS = 5_000
 const PONG_TIMEOUT_MS = 10_000
 const HELLO_TIMEOUT_MS = 10_000
 const MAX_PAIR_WAITERS = 32
+// How long an in-flight call survives a browser disconnect. The console keeps
+// executing through transient drops (sleep/wake, heartbeat misses), queues the
+// tool_result, and flushes it right after the reconnect hello_ack — failing
+// the call immediately would hand the agent a false error for work that
+// commits anyway, inviting a duplicate-DML retry.
+const RECONNECT_GRACE_MS = 30_000
+
+const DISCONNECT_UNVERIFIED_TEXT =
+  "browser_disconnected: the paired browser dropped during the call and did " +
+  "not reconnect in time. IMPORTANT: the call may have completed in the " +
+  "console before the drop — only its result was lost. Verify current state " +
+  "first (e.g. get_notebook_state or a read query); do NOT retry a " +
+  "data-modifying call unless verification shows it did not apply."
 
 type SessionState = "S0" | "S1"
 
@@ -59,6 +72,7 @@ type InflightCall = {
   resolve: (result: ToolResultPayload) => void
   reject: (err: Error) => void
   deadlineTimer: ReturnType<typeof setTimeout> | null
+  graceTimer: ReturnType<typeof setTimeout> | null
   abortCleanup: (() => void) | null
 }
 
@@ -250,6 +264,7 @@ export class BridgeSession {
         resolve,
         reject,
         deadlineTimer: null,
+        graceTimer: null,
         abortCleanup: null,
       }
       if (typeof deadlineMs === "number") {
@@ -511,20 +526,25 @@ export class BridgeSession {
     this.browserTools = []
     this.toolValidators.clear()
     this.sessionId = null
-    for (const call of Array.from(this.inflight.values())) {
+    // In-flight calls survive the disconnect: the console flushes their
+    // results after a reconnect hello_ack, and handleToolResult still finds
+    // them by requestId. Only grace expiry fails them.
+    for (const call of this.inflight.values()) {
+      this.scheduleDisconnectGrace(call)
+    }
+  }
+
+  private scheduleDisconnectGrace(call: InflightCall): void {
+    if (call.graceTimer) return
+    call.graceTimer = setTimeout(() => {
+      if (!this.inflight.has(call.requestId)) return
+      this.inflight.delete(call.requestId)
       clearInflight(call)
       call.resolve({
-        content: [
-          {
-            type: "text",
-            text:
-              "browser_disconnected: paired browser went away during the call.",
-          },
-        ],
+        content: [{ type: "text", text: DISCONNECT_UNVERIFIED_TEXT }],
         isError: true,
       })
-    }
-    this.inflight.clear()
+    }, RECONNECT_GRACE_MS)
   }
 }
 
@@ -532,6 +552,10 @@ const clearInflight = (call: InflightCall): void => {
   if (call.deadlineTimer) {
     clearTimeout(call.deadlineTimer)
     call.deadlineTimer = null
+  }
+  if (call.graceTimer) {
+    clearTimeout(call.graceTimer)
+    call.graceTimer = null
   }
   if (call.abortCleanup) {
     call.abortCleanup()

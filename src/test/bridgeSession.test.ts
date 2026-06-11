@@ -400,7 +400,40 @@ describe("BridgeSession — disconnect", () => {
     expect(session.getState()).toBe("S0")
   })
 
-  it("rejects in-flight tool calls on disconnect", async () => {
+  it("keeps in-flight calls alive across a disconnect and resolves them from a reconnect flush", async () => {
+    vi.useFakeTimers()
+    const { session } = makeSession({
+      getDeadlineMs: () => null,
+    })
+    const a = makeFakeBrowser()
+    session.attachBrowser(a.conn)
+    sendHello(session)
+    const result = session.callBrowserTool("list_cells", {})
+    const call = a.sent.find((m) => m.type === "tool_call") as {
+      requestId: string
+    }
+    session.handleSocketClose(a.conn)
+
+    // Console reconnects ~3s later and flushes the queued tool_result.
+    vi.advanceTimersByTime(3_000)
+    const b = makeFakeBrowser()
+    session.attachBrowser(b.conn)
+    sendHello(session)
+    session.handleMessage({
+      v: MCP_BRIDGE_VERSION,
+      type: "tool_result",
+      requestId: call.requestId,
+      content: [{ type: "text", text: "ok" }],
+      isError: false,
+    })
+
+    const out = await result
+    expect(out.isError).toBe(false)
+    expect(out.content[0].text).toBe("ok")
+  })
+
+  it("fails a disconnect-spanning call after the grace window with an unverified-completion warning", async () => {
+    vi.useFakeTimers()
     const { session } = makeSession({
       getDeadlineMs: () => null,
     })
@@ -409,9 +442,44 @@ describe("BridgeSession — disconnect", () => {
     sendHello(session)
     const result = session.callBrowserTool("list_cells", {})
     session.handleSocketClose(browser.conn)
+
+    vi.advanceTimersByTime(30_000)
     const out = await result
     expect(out.isError).toBe(true)
     expect(out.content[0].text).toMatch(/browser_disconnected/)
+    expect(out.content[0].text).toMatch(/may have completed/)
+    expect(out.content[0].text).toMatch(/do NOT retry/)
+  })
+
+  it("a result flushed after grace expiry is dropped, not double-resolved", async () => {
+    vi.useFakeTimers()
+    const { session } = makeSession({
+      getDeadlineMs: () => null,
+    })
+    const a = makeFakeBrowser()
+    session.attachBrowser(a.conn)
+    sendHello(session)
+    const result = session.callBrowserTool("list_cells", {})
+    const call = a.sent.find((m) => m.type === "tool_call") as {
+      requestId: string
+    }
+    session.handleSocketClose(a.conn)
+    vi.advanceTimersByTime(30_000)
+    const out = await result
+    expect(out.isError).toBe(true)
+
+    const b = makeFakeBrowser()
+    session.attachBrowser(b.conn)
+    sendHello(session)
+    expect(() =>
+      session.handleMessage({
+        v: MCP_BRIDGE_VERSION,
+        type: "tool_result",
+        requestId: call.requestId,
+        content: [{ type: "text", text: "late" }],
+        isError: false,
+      }),
+    ).not.toThrow()
   })
 
   it("a fresh browser after disconnect re-establishes via new hello", () => {
