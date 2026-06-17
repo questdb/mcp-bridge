@@ -10,7 +10,7 @@ import {
 import { startMcpServer } from "./mcpServer.js"
 import { bindWithRetry, type AttemptListenFn } from "./bindWithRetry.js"
 import { Logger } from "./logger.js"
-import { readFileSync } from "node:fs"
+import { readFileSync, writeSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
 const DEFAULT_CONSOLE_ORIGIN = "http://127.0.0.1:9000"
@@ -48,12 +48,22 @@ Usage:
   npx @questdb/mcp-bridge --help     Print this help and exit
 `
 
-const printHelp = (): void => {
+// Synchronous, best-effort writes to a standard fd.
+const writeFd = (fd: number, text: string): void => {
+  try {
+    writeSync(fd, text)
+  } catch {
+    /* nothing actionable if the output target rejects the write */
+  }
+}
+
+const helpText = (): string => {
   try {
     const readmePath = fileURLToPath(new URL("../README.md", import.meta.url))
-    process.stdout.write(readFileSync(readmePath, "utf8"))
+    return readFileSync(readmePath, "utf8")
   } catch {
-    process.stdout.write(USAGE)
+    // README not readable (missing in the install, permissions, sandbox).
+    return USAGE
   }
 }
 
@@ -65,16 +75,17 @@ const runCli = (argv: string[]): void => {
   if (command === undefined || command === "start") return
 
   if (command === "-v" || command === "--version") {
-    process.stdout.write(`${MCP_BRIDGE_VERSION}\n`)
+    writeFd(process.stdout.fd, `${MCP_BRIDGE_VERSION}\n`)
     process.exit(0)
   }
 
   if (command === "-h" || command === "--help") {
-    printHelp()
+    writeFd(process.stdout.fd, helpText())
     process.exit(0)
   }
 
-  process.stderr.write(
+  writeFd(
+    process.stderr.fd,
     `@questdb/mcp-bridge: unknown command '${command}'.\n` +
       `Run 'npx @questdb/mcp-bridge --help' for usage.\n`,
   )
