@@ -10,6 +10,8 @@ import {
 import { startMcpServer } from "./mcpServer.js"
 import { bindWithRetry, type AttemptListenFn } from "./bindWithRetry.js"
 import { Logger } from "./logger.js"
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 
 const DEFAULT_CONSOLE_ORIGIN = "http://127.0.0.1:9000"
 
@@ -37,6 +39,49 @@ const PER_TOOL_TIMEOUT_MS: Record<string, number> = {
   get_workspace_state: 15_000,
   get_recent_user_actions: 15_000,
 }
+
+const USAGE = `@questdb/mcp-bridge — bridge coding agents to a running QuestDB Web Console.
+
+Usage:
+  npx @questdb/mcp-bridge [start]    Start the bridge (default when no command is given)
+  npx @questdb/mcp-bridge --version  Print the version and exit
+  npx @questdb/mcp-bridge --help     Print this help and exit
+`
+
+const printHelp = (): void => {
+  try {
+    const readmePath = fileURLToPath(new URL("../README.md", import.meta.url))
+    process.stdout.write(readFileSync(readmePath, "utf8"))
+  } catch {
+    process.stdout.write(USAGE)
+  }
+}
+
+// Parse argv before any logger/server side effects so --version and --help
+// stay pure (no log file, no port allocation) and exit immediately.
+const runCli = (argv: string[]): void => {
+  const command = argv[0]
+
+  if (command === undefined || command === "start") return
+
+  if (command === "-v" || command === "--version") {
+    process.stdout.write(`${MCP_BRIDGE_VERSION}\n`)
+    process.exit(0)
+  }
+
+  if (command === "-h" || command === "--help") {
+    printHelp()
+    process.exit(0)
+  }
+
+  process.stderr.write(
+    `@questdb/mcp-bridge: unknown command '${command}'.\n` +
+      `Run 'npx @questdb/mcp-bridge --help' for usage.\n`,
+  )
+  process.exit(2)
+}
+
+runCli(process.argv.slice(2))
 
 const logger = new Logger()
 const { log, fatal } = logger

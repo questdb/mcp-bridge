@@ -7,7 +7,7 @@
   "homepage": "https://github.com/questdb/mcp-bridge",
   "repository": {
     "type": "git",
-    "url": "https://github.com/questdb/mcp-bridge.git"
+    "url": "git+https://github.com/questdb/mcp-bridge.git"
   },
   "bugs": {
     "url": "https://github.com/questdb/mcp-bridge/issues"
@@ -23,7 +23,7 @@
   ],
   "type": "module",
   "bin": {
-    "questdb-mcp-bridge": "./dist/index.js"
+    "questdb-mcp-bridge": "dist/index.js"
   },
   "scripts": {
     "build": "rimraf dist && tsc -p tsconfig.build.json && cp -R src/consts dist/consts && chmod +x dist/index.js",

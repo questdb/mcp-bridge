@@ -20,12 +20,31 @@ Add to your MCP client's config (e.g. `~/.claude/.mcp.json`):
 }
 ```
 
+### Environment variables
+
 | Label             | Value                                | Default Value                                          | Description                                                                              |
 | ----------------- | ------------------------------------ | ------------------------------------------------ | ---------------------------------------------------------------------------------- |
 | `CONSOLE_ORIGIN`  | origin URL                           | `http://127.0.0.1:9000`                          | QuestDB Web Console origin. `127.0.0.1` and `localhost` are interchangeable.       |
 | `MCP_BRIDGE_PORT` | `1`–`65535`                          | auto-allocated                                   | When specified, the bridge uses a fixed port. Bridge fails to start if specified port is taken.                                  |
 | `LOG_PATH`        | file path                            | `/tmp/questdb-mcp-bridge/<ISO-ts>-<pid>.log`     | Override the log file location.                                                    |
 | `LOG_LEVEL`       | `ERROR` / `WARN` / `INFO` / `DEBUG`  | `INFO`                                           | `DEBUG` adds heartbeats and full tool payloads.                                    |
+
+
+## Commands
+
+Your MCP client runs the bridge for you via the config above, so you
+rarely invoke it by hand. When you do:
+
+| Command                             | Description                              |
+| ----------------------------------- | ---------------------------------------- |
+| `npx @questdb/mcp-bridge` (no args) | Start the bridge — same as `start`.      |
+| `npx @questdb/mcp-bridge start`     | Start the bridge.                        |
+| `npx @questdb/mcp-bridge --version` | Print the version and exit. Alias: `-v`. |
+| `npx @questdb/mcp-bridge --help`    | Print this help and exit. Alias: `-h`.   |
+
+An unknown command exits non-zero with a short error. Pin a version with
+`npx @questdb/mcp-bridge@0.1.0 start`. (Installed on your `PATH`, the
+executable is named `questdb-mcp-bridge`.)
 
 
 ## Pairing
