@@ -105,6 +105,10 @@ export class BridgeSession {
   private browserTools: ToolSchema[] = []
   private toolValidators = new Map<string, ArgValidator>()
   private versionMismatch: VersionMismatch | null = null
+  // Set when a console's hello is refused for a major-version mismatch. The
+  // socket is closed, but we keep the rejected version so the pairing tools can
+  // hand the agent an actionable upgrade message instead of a silent timeout.
+  private incompatibleConsole: VersionMismatch | null = null
   private browserPermissions: MCPPermissions = { read: true, write: true }
   private inflight = new Map<string, InflightCall>()
   private pairWaiters: PairWaiter[] = []
@@ -138,7 +142,11 @@ export class BridgeSession {
   }
 
   getPairingSnapshot(): PairingSnapshot {
-    if (this.state !== "S1" || !this.sessionId) return { paired: false }
+    if (this.state !== "S1" || !this.sessionId) {
+      return this.incompatibleConsole
+        ? { paired: false, incompatible: this.incompatibleConsole }
+        : { paired: false }
+    }
     return {
       paired: true,
       sessionId: this.sessionId,
@@ -153,6 +161,13 @@ export class BridgeSession {
   ): Promise<PairingSnapshot | { paired: false; rateLimited: true }> {
     if (this.state === "S1") {
       return Promise.resolve(this.getPairingSnapshot())
+    }
+
+    if (this.incompatibleConsole) {
+      return Promise.resolve({
+        paired: false,
+        incompatible: this.incompatibleConsole,
+      })
     }
 
     if (this.pairWaiters.length >= MAX_PAIR_WAITERS) {
@@ -361,6 +376,19 @@ export class BridgeSession {
       actualMajor === null ||
       expectedMajor !== actualMajor
     ) {
+      this.incompatibleConsole = {
+        bridgeVersion: MCP_BRIDGE_VERSION,
+        expectedBridgeVersion: msg.expectedBridgeVersion,
+      }
+      // Resolve any parked waiters now instead of letting them run out the full
+      // poll timeout — the agent should get the actionable upgrade message on
+      // the current wait_for_pairing call, not a wasted timeout-then-retry.
+      const waiters = this.pairWaiters
+      this.pairWaiters = []
+      for (const w of waiters) {
+        clearTimeout(w.timer)
+        w.resolve({ paired: false, incompatible: this.incompatibleConsole })
+      }
       this.browser?.close(
         WS_CLOSE_CODES.major_version_mismatch,
         "major_version_mismatch",
@@ -368,6 +396,7 @@ export class BridgeSession {
       this.connClosing = true
       return
     }
+    this.incompatibleConsole = null
     this.versionMismatch =
       msg.expectedBridgeVersion === MCP_BRIDGE_VERSION
         ? null

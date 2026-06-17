@@ -44,8 +44,14 @@ export const WAIT_TOOL: ToolSchema = {
     "maxRetriesHint:10}` on timeout — call again to keep waiting (up " +
     "to ~10 retries / ~8 min) until the user pairs. " +
     "If the bridge version doesn't match what the web console expects, " +
-    "the success payload includes a `warning` field naming both " +
-    "versions; surface it verbatim to the user before proceeding. " +
+    "the success payload includes a `warning` plus a pre-rendered " +
+    "`userMessage`; show the `userMessage` to the user verbatim before " +
+    "proceeding. " +
+    "If pairing is refused outright for an incompatible bridge, the result " +
+    "is `{paired:false, reason:'incompatible_bridge', userMessage, " +
+    "assistantNextActions}` — show the `userMessage` verbatim and STOP " +
+    "polling; pairing cannot succeed until the user reinstalls the bridge " +
+    "version named in the message. " +
     "`permissions` describes the user-granted MCP scopes: `read=true` " +
     "allows schema introspection and DQL (SELECT/SHOW); `write=true` " +
     "additionally allows DDL/DML (CREATE/INSERT/UPDATE/DELETE/DROP/…). " +
@@ -82,7 +88,7 @@ export type VersionMismatch = {
 }
 
 export type PairingSnapshot =
-  | { paired: false }
+  | { paired: false; incompatible?: VersionMismatch }
   | {
       paired: true
       sessionId: string
@@ -100,6 +106,7 @@ export type WaitForPairResult =
       versionMismatch: VersionMismatch | null
     }
   | { paired: false; reason: "timeout" | "rate_limited" }
+  | { paired: false; reason: "incompatible"; incompatible: VersionMismatch }
 
 export type PairingToolsContext = {
   buildDeepLink: () => string
@@ -113,11 +120,43 @@ const MAX_PAIRING_POLL_TIMEOUT_MS = 50_000
 const MIN_PAIRING_POLL_TIMEOUT_MS = 1_000
 const RECOMMENDED_MAX_RETRIES = 10
 
+// Pre-rendered text the assistant SHOULD show the user verbatim — same forcing
+// pattern as get_pairing_credentials' `userMessage`. `expectedBridgeVersion` is
+// the exact npm version the console was verified against, so it doubles as the
+// pin to install.
+const buildVersionUserMessage = (m: VersionMismatch): string =>
+  `Version mismatch: this MCP bridge is @questdb/mcp-bridge v${m.bridgeVersion}, ` +
+  `but the QuestDB Web Console expects v${m.expectedBridgeVersion}. ` +
+  `Update your MCP server command to \`npx @questdb/mcp-bridge@${m.expectedBridgeVersion} start\`, ` +
+  `restart your coding agent, then pair again.`
+
 const buildVersionWarning = (m: VersionMismatch): string =>
-  `version_mismatch: This bridge is @questdb/mcp-bridge v${m.bridgeVersion}, ` +
-  `but the QuestDB Web Console expects bridge version ${m.expectedBridgeVersion}. ` +
-  `Some tools may not work as expected. Inform the user about this version mismatch ` +
-  `before proceeding.`
+  `version_mismatch (bridge v${m.bridgeVersion} vs console-expected ` +
+  `v${m.expectedBridgeVersion}): show the \`userMessage\` field to the user ` +
+  `verbatim before proceeding. Some tools may not work properly until the correct bridge version is used.`
+
+// Returned when the console tried to pair but its expected bridge major differs
+// — pairing was refused, so this is a terminal error for the agent: surface the
+// upgrade instruction and stop polling rather than burning retries.
+const buildIncompatiblePayload = (inc: VersionMismatch): ToolResultPayload => ({
+  content: [
+    {
+      type: "text",
+      text: JSON.stringify({
+        paired: false,
+        reason: "incompatible_bridge",
+        warning: buildVersionWarning(inc),
+        userMessage: buildVersionUserMessage(inc),
+        assistantNextActions: [
+          "Show the `userMessage` text to the user verbatim.",
+          `Tell them to set their MCP server command to \`npx @questdb/mcp-bridge@${inc.expectedBridgeVersion} start\` and restart this coding agent.`,
+          "Stop calling wait_for_pairing — pairing cannot succeed until the bridge version is updated.",
+        ],
+      }),
+    },
+  ],
+  isError: true,
+})
 
 type Counters = { waitRetries: number }
 
@@ -127,6 +166,9 @@ export const createPairingToolHandlers = (
 ) => {
   const handleConnectWebConsole = (): ToolResultPayload => {
     const state = ctx.getPairingState()
+    if (!state.paired && state.incompatible) {
+      return buildIncompatiblePayload(state.incompatible)
+    }
     if (state.paired) {
       const payload: Record<string, unknown> = {
         paired: true,
@@ -137,6 +179,7 @@ export const createPairingToolHandlers = (
       }
       if (state.versionMismatch) {
         payload.warning = buildVersionWarning(state.versionMismatch)
+        payload.userMessage = buildVersionUserMessage(state.versionMismatch)
       }
       return {
         content: [
@@ -196,6 +239,10 @@ export const createPairingToolHandlers = (
     args: { timeout_ms?: number } | undefined,
   ): Promise<ToolResultPayload> => {
     const initial = ctx.getPairingState()
+    if (!initial.paired && initial.incompatible) {
+      counters.waitRetries = 0
+      return buildIncompatiblePayload(initial.incompatible)
+    }
     if (initial.paired) {
       counters.waitRetries = 0
       const payload: Record<string, unknown> = {
@@ -205,6 +252,7 @@ export const createPairingToolHandlers = (
       }
       if (initial.versionMismatch) {
         payload.warning = buildVersionWarning(initial.versionMismatch)
+        payload.userMessage = buildVersionUserMessage(initial.versionMismatch)
       }
       return {
         content: [{ type: "text", text: JSON.stringify(payload) }],
@@ -222,10 +270,15 @@ export const createPairingToolHandlers = (
       }
       if (result.versionMismatch) {
         payload.warning = buildVersionWarning(result.versionMismatch)
+        payload.userMessage = buildVersionUserMessage(result.versionMismatch)
       }
       return {
         content: [{ type: "text", text: JSON.stringify(payload) }],
       }
+    }
+    if (result.reason === "incompatible") {
+      counters.waitRetries = 0
+      return buildIncompatiblePayload(result.incompatible)
     }
     if (result.reason === "rate_limited") {
       return {

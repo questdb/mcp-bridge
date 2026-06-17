@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
 
 jobs:
@@ -10,11 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: corepack enable
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: yarn
-      - run: yarn install --frozen-lockfile
+      - run: yarn install --immutable
       - name: Verify src/consts/shared-definitions.json matches questdb/ui
         env:
           UPSTREAM_REPO: questdb/ui

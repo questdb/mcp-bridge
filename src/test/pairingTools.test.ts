@@ -131,6 +131,33 @@ describe("get_pairing_credentials handler", () => {
     expect(typeof parsed.warning).toBe("string")
     expect(parsed.warning as string).toContain("0.1.0")
     expect(parsed.warning as string).toContain("0.2.0")
+    expect(parsed.userMessage as string).toContain(
+      "npx @questdb/mcp-bridge@0.2.0 start",
+    )
+  })
+
+  it("returns an actionable incompatible_bridge error when the console was refused", () => {
+    const { handleConnectWebConsole } = createPairingToolHandlers(
+      makeCtx({
+        getPairingState: () => ({
+          paired: false,
+          incompatible: {
+            bridgeVersion: "1.4.0",
+            expectedBridgeVersion: "2.0.0",
+          },
+        }),
+      }),
+    )
+    const out = handleConnectWebConsole()
+    expect(out.isError).toBe(true)
+    const parsed = JSON.parse(out.content[0].text) as Record<string, unknown>
+    expect(parsed.paired).toBe(false)
+    expect(parsed.reason).toBe("incompatible_bridge")
+    expect(parsed.userMessage as string).toContain("v1.4.0")
+    expect(parsed.userMessage as string).toContain(
+      "npx @questdb/mcp-bridge@2.0.0 start",
+    )
+    expect(Array.isArray(parsed.assistantNextActions)).toBe(true)
   })
 
   it("is idempotent — repeated calls produce the same payload", () => {
@@ -218,6 +245,56 @@ describe("wait_for_pairing handler", () => {
     expect(typeof parsed.warning).toBe("string")
     expect(parsed.warning as string).toContain("0.1.0")
     expect(parsed.warning as string).toContain("0.2.0")
+    expect(parsed.userMessage as string).toContain(
+      "npx @questdb/mcp-bridge@0.2.0 start",
+    )
+  })
+
+  it("returns an actionable incompatible_bridge error when waitForPair reports incompatible", async () => {
+    const ctx = makeCtx({
+      getPairingState: () => ({ paired: false }),
+      waitForPair: () =>
+        Promise.resolve({
+          paired: false,
+          reason: "incompatible",
+          incompatible: {
+            bridgeVersion: "1.4.0",
+            expectedBridgeVersion: "2.0.0",
+          },
+        }),
+    })
+    const { handleWaitForPairing } = createPairingToolHandlers(ctx)
+    const out = await handleWaitForPairing({})
+    expect(out.isError).toBe(true)
+    const parsed = JSON.parse(out.content[0].text) as Record<string, unknown>
+    expect(parsed.paired).toBe(false)
+    expect(parsed.reason).toBe("incompatible_bridge")
+    expect(parsed.userMessage as string).toContain(
+      "npx @questdb/mcp-bridge@2.0.0 start",
+    )
+  })
+
+  it("fast-paths an incompatible bridge from the initial snapshot without waiting", async () => {
+    let waited = false
+    const ctx = makeCtx({
+      getPairingState: () => ({
+        paired: false,
+        incompatible: {
+          bridgeVersion: "1.4.0",
+          expectedBridgeVersion: "2.0.0",
+        },
+      }),
+      waitForPair: () => {
+        waited = true
+        return Promise.resolve({ paired: false, reason: "timeout" })
+      },
+    })
+    const { handleWaitForPairing } = createPairingToolHandlers(ctx)
+    const out = await handleWaitForPairing({})
+    expect(waited).toBe(false)
+    expect(out.isError).toBe(true)
+    const parsed = JSON.parse(out.content[0].text) as Record<string, unknown>
+    expect(parsed.reason).toBe("incompatible_bridge")
   })
 
   it("returns timeout payload on timeout, with retry guidance (camelCase)", async () => {

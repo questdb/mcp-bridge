@@ -224,6 +224,55 @@ describe("BridgeSession — pairing handshake", () => {
     expect(session.getState()).toBe("S0")
   })
 
+  it("remembers a refused major-mismatch console so the pairing tools can surface an upgrade notice", async () => {
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(
+      session,
+      "the-token",
+      helloTools,
+      { read: true, write: true },
+      "999.0.0",
+    )
+    const snap = session.getPairingSnapshot()
+    expect(snap.paired).toBe(false)
+    if (snap.paired) throw new Error("expected unpaired")
+    expect(snap.incompatible).toEqual({
+      bridgeVersion: MCP_BRIDGE_VERSION,
+      expectedBridgeVersion: "999.0.0",
+    })
+    // waitForPair resolves immediately instead of blocking the full timeout.
+    const waited = await session.waitForPair(50_000)
+    expect(waited.paired).toBe(false)
+    if (waited.paired || "rateLimited" in waited) {
+      throw new Error("expected incompatible result")
+    }
+    expect(waited.incompatible?.expectedBridgeVersion).toBe("999.0.0")
+  })
+
+  it("resolves an already-parked waiter with incompatible when a refused console connects", async () => {
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    // Park a waiter first — this is the common flow: the agent calls
+    // wait_for_pairing and blocks, THEN the user opens an incompatible console.
+    const pending = session.waitForPair(50_000)
+    sendHello(
+      session,
+      "the-token",
+      helloTools,
+      { read: true, write: true },
+      "999.0.0",
+    )
+    const waited = await pending
+    expect(waited.paired).toBe(false)
+    if (waited.paired || "rateLimited" in waited) {
+      throw new Error("expected incompatible result")
+    }
+    expect(waited.incompatible?.expectedBridgeVersion).toBe("999.0.0")
+  })
+
   it("accepts a same-major drift and records the mismatch in the snapshot", () => {
     const { session } = makeSession()
     const browser = makeFakeBrowser()

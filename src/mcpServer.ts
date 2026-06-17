@@ -149,6 +149,13 @@ export const startMcpServer = async ({
         if ("rateLimited" in snap && snap.rateLimited) {
           return { paired: false, reason: "rate_limited" as const }
         }
+        if ("incompatible" in snap && snap.incompatible) {
+          return {
+            paired: false,
+            reason: "incompatible" as const,
+            incompatible: snap.incompatible,
+          }
+        }
         return { paired: false, reason: "timeout" as const }
       })
     },

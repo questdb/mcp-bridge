@@ -53,6 +53,8 @@ describe("bundledTools", () => {
     expect(cells.items.required).toEqual([
       "id",
       "value",
+      "preserve_value",
+      "type",
       "mode",
       "auto_refresh",
       "is_chart_maximized",
