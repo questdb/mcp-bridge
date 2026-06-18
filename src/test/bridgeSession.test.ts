@@ -319,6 +319,74 @@ describe("BridgeSession — heartbeat", () => {
     expect(browser.terminated).toBe(true)
     expect(browser.closed).toBeNull()
   })
+
+  it("stays alive while the console answers each ping with a matching pong", () => {
+    vi.useFakeTimers()
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    // Five heartbeat rounds (25s), each answered — must never terminate.
+    for (let round = 0; round < 5; round++) {
+      vi.advanceTimersByTime(5_000)
+      const ping = [...browser.sent].reverse().find((m) => m.type === "ping")
+      if (ping?.type !== "ping") throw new Error("expected a ping")
+      session.handleMessage({
+        v: MCP_BRIDGE_VERSION,
+        type: "pong",
+        nonce: ping.nonce,
+      })
+    }
+    expect(browser.terminated).toBe(false)
+  })
+
+  it("waits the full pong timeout (not one heartbeat interval) before terminating", () => {
+    // Guards the fix: the 5s interval must NOT collapse the 10s pong tolerance.
+    vi.useFakeTimers()
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    vi.advanceTimersByTime(5_000) // ping sent at t=5s
+    vi.advanceTimersByTime(9_999) // a second interval elapses; must NOT terminate yet
+    expect(browser.terminated).toBe(false)
+    vi.advanceTimersByTime(1) // t=15s → 10s after the ping → terminate
+    expect(browser.terminated).toBe(true)
+  })
+
+  it("ignores a pong with a stale nonce and still times out the unanswered ping", () => {
+    vi.useFakeTimers()
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    vi.advanceTimersByTime(5_000)
+    expect(browser.sent.find((m) => m.type === "ping")).toBeTruthy()
+    // A pong for the wrong nonce must not clear the outstanding ping.
+    session.handleMessage({
+      v: MCP_BRIDGE_VERSION,
+      type: "pong",
+      nonce: "not-the-live-nonce",
+    })
+    vi.advanceTimersByTime(10_000)
+    expect(browser.terminated).toBe(true)
+  })
+
+  it("answers an inbound ping with a pong echoing the nonce", () => {
+    vi.useFakeTimers()
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    session.handleMessage({
+      v: MCP_BRIDGE_VERSION,
+      type: "ping",
+      nonce: "abc123",
+    })
+    const pong = browser.sent.find((m) => m.type === "pong")
+    expect(pong?.type).toBe("pong")
+    if (pong?.type === "pong") expect(pong.nonce).toBe("abc123")
+  })
 })
 
 describe("BridgeSession — tool calls", () => {
@@ -628,6 +696,30 @@ describe("BridgeSession — disconnect", () => {
     expect(session.getState()).toBe("S1")
   })
 
+  it("clears a refused console's incompatible flag on disconnect so pairing can resume", async () => {
+    const { session } = makeSession()
+    const a = makeFakeBrowser()
+    session.attachBrowser(a.conn)
+    sendHello(session, "the-token", helloTools, { read: true, write: true }, "999.0.0")
+    // While the refused socket is attached, the snapshot reports incompatible.
+    const before = session.getPairingSnapshot()
+    if (before.paired) throw new Error("expected unpaired")
+    expect(before.incompatible).toBeTruthy()
+    // The refused socket drops. The incompatible fact is per-connection and must
+    // not outlive it, or the agent is told to stop polling forever.
+    session.handleSocketClose(a.conn)
+    const after = session.getPairingSnapshot()
+    if (after.paired) throw new Error("expected unpaired")
+    expect(after.incompatible).toBeUndefined()
+    // A fresh waiter now parks for a new console instead of short-circuiting.
+    const pending = session.waitForPair(50_000)
+    const b = makeFakeBrowser()
+    session.attachBrowser(b.conn)
+    sendHello(session)
+    const res = await pending
+    expect(res.paired).toBe(true)
+  })
+
   it("ignores a stale close from a previously-replaced browser", () => {
     const { session } = makeSession()
     const a = makeFakeBrowser()
@@ -847,6 +939,37 @@ describe("BridgeSession — tool argument validation", () => {
     const bad = await session.callBrowserTool("run_query", { query: 123 })
     expect(bad.isError).toBe(true)
     expect(bad.content[0]?.text).toMatch(/VALIDATION_ERROR/)
+  })
+
+  it("rejects arguments over the byte limit without relaying", async () => {
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session) // permissive { type: "object" } schema
+
+    const oversized = "x".repeat(5 * 1024 * 1024) // 5MB ASCII > 4MB
+    const out = await session.callBrowserTool("list_cells", { blob: oversized })
+
+    expect(out.isError).toBe(true)
+    expect(out.content[0]?.text).toMatch(/VALIDATION_ERROR/)
+    expect(out.content[0]?.text).toMatch(/byte limit/)
+    expect(browser.sent.some((m) => m.type === "tool_call")).toBe(false)
+  })
+
+  it("measures argument size in UTF-8 bytes, not UTF-16 code units", async () => {
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+
+    // ~2M CJK chars: ~2M UTF-16 code units (would pass a naive .length check)
+    // but ~6MB of UTF-8 (3 bytes each) — must be rejected by the byte cap.
+    const multibyte = "中".repeat(2 * 1024 * 1024)
+    const out = await session.callBrowserTool("list_cells", { blob: multibyte })
+
+    expect(out.isError).toBe(true)
+    expect(out.content[0]?.text).toMatch(/byte limit/)
+    expect(browser.sent.some((m) => m.type === "tool_call")).toBe(false)
   })
 
   it("does not let two tools sharing an $id reuse one validator", async () => {

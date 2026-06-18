@@ -22,7 +22,7 @@ import type { Log, ToolResultPayload } from "./types.js"
 const SERVER_NAME = "questdb-mcp-bridge"
 const SERVER_VERSION = MCP_BRIDGE_VERSION
 
-const safePairingCredentialsSummary = (
+export const safePairingCredentialsSummary = (
   content: ToolResultPayload["content"],
 ): string | null => {
   try {
@@ -92,12 +92,11 @@ const SERVER_INSTRUCTIONS = [
   "",
   "═══════════════════════════════════════════════════════════════════",
   "",
-  "Tool surface: 30 tools visible from `tools/list` from the very first",
-  "request — 2 pairing tools (get_pairing_credentials, wait_for_pairing)",
-  "plus 28 functional tools (3 schema + 3 reference + 19 notebook + 3",
-  "meta). Functional tools require a paired Web Console; calling them",
-  "while unpaired returns a `BRIDGE_NOT_PAIRED` error pointing back at",
-  "the pairing flow above.",
+  "Tool surface: the two pairing tools (get_pairing_credentials,",
+  "wait_for_pairing) plus a catalog of functional tools, all visible from",
+  "`tools/list` from the very first request. Functional tools require a",
+  "paired Web Console; calling them while unpaired returns a",
+  "`BRIDGE_NOT_PAIRED` error pointing back at the pairing flow above.",
   "",
   "Verifying current state before answering:",
   "  The user can change notebook state at any time (switching tabs,",

@@ -176,6 +176,36 @@ describe("WebSocket round-trip", () => {
     a.close()
   })
 
+  it("closes with 4005 malformed_json on a non-JSON frame", async () => {
+    const bridge = await startBridge()
+    teardown.push(bridge.stop)
+    const ws = await open(bridge.port)
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.once("close", (code, reason) =>
+        resolve({ code, reason: reason.toString() }),
+      )
+    })
+    ws.send("{ this is not json")
+    const { code, reason } = await closed
+    expect(code).toBe(4005)
+    expect(reason).toBe("malformed_json")
+  })
+
+  it("closes with 4005 malformed_message when v/type are absent", async () => {
+    const bridge = await startBridge()
+    teardown.push(bridge.stop)
+    const ws = await open(bridge.port)
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.once("close", (code, reason) =>
+        resolve({ code, reason: reason.toString() }),
+      )
+    })
+    ws.send(JSON.stringify({ hello: "world" })) // valid JSON, no v/type
+    const { code, reason } = await closed
+    expect(code).toBe(4005)
+    expect(reason).toBe("malformed_message")
+  })
+
   it("closes the WS with 4002 on bad token in hello body", async () => {
     const bridge = await startBridge()
     teardown.push(bridge.stop)

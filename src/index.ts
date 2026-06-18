@@ -9,6 +9,7 @@ import {
 } from "./wsServer.js"
 import { startMcpServer } from "./mcpServer.js"
 import { bindWithRetry, type AttemptListenFn } from "./bindWithRetry.js"
+import { parseCli, parsePort } from "./cli.js"
 import { Logger } from "./logger.js"
 import { readFileSync, writeSync } from "node:fs"
 import { fileURLToPath } from "node:url"
@@ -69,48 +70,29 @@ const helpText = (): string => {
 
 // Parse argv before any logger/server side effects so --version and --help
 // stay pure (no log file, no port allocation) and exit immediately.
-const runCli = (argv: string[]): void => {
-  const command = argv[0]
-
-  if (command === undefined || command === "start") return
-
-  if (command === "-v" || command === "--version") {
-    writeFd(process.stdout.fd, `${MCP_BRIDGE_VERSION}\n`)
-    process.exit(0)
-  }
-
-  if (command === "-h" || command === "--help") {
-    writeFd(process.stdout.fd, helpText())
-    process.exit(0)
-  }
-
-  writeFd(
-    process.stderr.fd,
-    `@questdb/mcp-bridge: unknown command '${command}'.\n` +
-      `Run 'npx @questdb/mcp-bridge --help' for usage.\n`,
-  )
-  process.exit(2)
+const cli = parseCli(process.argv.slice(2), MCP_BRIDGE_VERSION, helpText)
+if (cli.kind === "exit") {
+  if (cli.stdout !== undefined) writeFd(process.stdout.fd, cli.stdout)
+  if (cli.stderr !== undefined) writeFd(process.stderr.fd, cli.stderr)
+  process.exit(cli.code)
 }
-
-runCli(process.argv.slice(2))
 
 const logger = new Logger()
 const { log, fatal } = logger
 
 const main = async () => {
-  const portRaw = process.env.MCP_BRIDGE_PORT
+  const portChoice = parsePort(process.env.MCP_BRIDGE_PORT)
+  if ("error" in portChoice) {
+    fatal(portChoice.error, 2)
+  }
   let port: number
-  if (portRaw !== undefined && portRaw !== "") {
-    if (!/^\d+$/.test(portRaw)) {
-      fatal(`MCP_BRIDGE_PORT=${portRaw} must be an integer`, 2)
-    }
-    const n = Number(portRaw)
-    if (n < 1 || n > 65535) {
-      fatal(`MCP_BRIDGE_PORT=${portRaw} is out of range`, 2)
-    }
-    port = n
+  let isPinned: boolean
+  if ("pinned" in portChoice) {
+    port = portChoice.pinned
+    isPinned = true
   } else {
     port = await findFreePort()
+    isPinned = false
   }
 
   const consoleOrigin = process.env.CONSOLE_ORIGIN ?? DEFAULT_CONSOLE_ORIGIN
@@ -152,7 +134,7 @@ const main = async () => {
   try {
     const bound = await bindWithRetry({
       port,
-      isPinned: !!portRaw,
+      isPinned,
       attemptListen,
       findFreePort,
       log,

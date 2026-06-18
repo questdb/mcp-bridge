@@ -25,6 +25,11 @@ import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv
 const HEARTBEAT_INTERVAL_MS = 5_000
 const PONG_TIMEOUT_MS = 10_000
 const HELLO_TIMEOUT_MS = 10_000
+// If a peer ignores our graceful close() (a stuck or misbehaving console), force
+// the socket down shortly after. Otherwise `this.browser` stays set — and on the
+// protocol-violation paths `connClosing` stays true — until ws's own
+// close-handshake timeout (~30s), wedging a fresh pairing for that whole window.
+const FORCE_CLOSE_MS = 1_000
 const MAX_PAIR_WAITERS = 32
 // How long an in-flight call survives a browser disconnect. The console keeps
 // executing through transient drops (sleep/wake, heartbeat misses), queues the
@@ -160,6 +165,7 @@ export class BridgeSession {
   private outstandingPing: { nonce: string; sentAtNs: bigint } | null = null
   private pongTimer: ReturnType<typeof setTimeout> | null = null
   private helloTimer: ReturnType<typeof setTimeout> | null = null
+  private closeFallbackTimer: ReturnType<typeof setTimeout> | null = null
   private connClosing = false
 
   constructor(private config: BridgeSessionConfig) {}
@@ -233,9 +239,22 @@ export class BridgeSession {
     }
     this.browser = conn
     this.helloTimer = setTimeout(() => {
-      conn.close(WS_CLOSE_CODES.protocol_violation, "hello_timeout")
+      this.closeBrowser(WS_CLOSE_CODES.protocol_violation, "hello_timeout")
     }, HELLO_TIMEOUT_MS)
     return "accepted"
+  }
+
+  private closeBrowser(code: number, reason: string): void {
+    const conn = this.browser
+    if (!conn) return
+    conn.close(code, reason)
+    if (this.closeFallbackTimer) clearTimeout(this.closeFallbackTimer)
+    const timer = setTimeout(() => {
+      this.closeFallbackTimer = null
+      conn.terminate()
+    }, FORCE_CLOSE_MS)
+    timer.unref()
+    this.closeFallbackTimer = timer
   }
 
   handleMessage(msg: AnyMessage): void {
@@ -299,7 +318,7 @@ export class BridgeSession {
     }
     let argsByteLength: number
     try {
-      argsByteLength = JSON.stringify(args).length
+      argsByteLength = Buffer.byteLength(JSON.stringify(args), "utf8")
     } catch {
       argsByteLength = Number.POSITIVE_INFINITY
     }
@@ -408,7 +427,7 @@ export class BridgeSession {
     }
 
     if (this.state === "S1") {
-      this.browser?.close(
+      this.closeBrowser(
         WS_CLOSE_CODES.protocol_violation,
         "duplicate_hello",
       )
@@ -416,13 +435,13 @@ export class BridgeSession {
       return
     }
     if (msg.token !== this.config.token) {
-      this.browser?.close(WS_CLOSE_CODES.token_invalid, "token_mismatch")
+      this.closeBrowser(WS_CLOSE_CODES.token_invalid, "token_mismatch")
       this.connClosing = true
       return
     }
 
     if (!isValidToolList(msg.tools)) {
-      this.browser?.close(
+      this.closeBrowser(
         WS_CLOSE_CODES.protocol_violation,
         "malformed_hello_tools",
       )
@@ -450,7 +469,7 @@ export class BridgeSession {
         clearTimeout(w.timer)
         w.resolve({ paired: false, incompatible: this.incompatibleConsole })
       }
-      this.browser?.close(
+      this.closeBrowser(
         WS_CLOSE_CODES.major_version_mismatch,
         "major_version_mismatch",
       )
@@ -570,15 +589,7 @@ export class BridgeSession {
 
   private sendPing(): void {
     if (!this.browser || this.state !== "S1") return
-    if (this.outstandingPing) {
-      if (this.pongTimer) {
-        clearTimeout(this.pongTimer)
-        this.pongTimer = null
-      }
-      this.outstandingPing = null
-      this.browser.terminate()
-      return
-    }
+    if (this.outstandingPing) return
     const nonce = generateNonce()
     const sentAtNs = monotonicNs()
     this.outstandingPing = { nonce, sentAtNs }
@@ -596,6 +607,10 @@ export class BridgeSession {
     if (this.helloTimer) {
       clearTimeout(this.helloTimer)
       this.helloTimer = null
+    }
+    if (this.closeFallbackTimer) {
+      clearTimeout(this.closeFallbackTimer)
+      this.closeFallbackTimer = null
     }
     this.stopHeartbeat()
     this.browser = null
@@ -628,6 +643,7 @@ export class BridgeSession {
     this.browserTools = []
     this.toolValidators.clear()
     this.sessionId = null
+    this.incompatibleConsole = null
     // In-flight calls survive the disconnect: the console flushes their
     // results after a reconnect hello_ack, and handleToolResult still finds
     // them by requestId. Only grace expiry fails them.
