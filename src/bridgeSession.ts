@@ -40,6 +40,17 @@ const DISCONNECT_UNVERIFIED_TEXT =
   "first (e.g. get_notebook_state or a read query); do NOT retry a " +
   "data-modifying call unless verification shows it did not apply."
 
+// A deadline timeout means the result was lost, not that the work was rolled
+// back — the console may have committed it (e.g. a long INSERT that finished
+// just as the deadline fired). Carry the same do-not-blindly-retry guidance as
+// the disconnect path so the agent doesn't duplicate a data-modifying call.
+const buildTimeoutText = (deadlineMs: number): string =>
+  `timeout: the tool call exceeded ${deadlineMs}ms before the paired console ` +
+  `returned a result. IMPORTANT: the call may have completed in the console — ` +
+  `only its result was not received in time. Verify current state first (e.g. ` +
+  `get_notebook_state or a read query); do NOT retry a data-modifying call ` +
+  `unless verification shows it did not apply.`
+
 type SessionState = "S0" | "S1"
 
 // Validates a tool call's arguments against the input schema the browser
@@ -47,10 +58,43 @@ type SessionState = "S0" | "S1"
 // and the Web Console renders/persists them without an error boundary, so a
 // wrong-typed field (e.g. a non-string cell value) could crash the editor. We
 // reject off-schema args here, at the trust boundary, against the LIVE schema
-// (no drift vs. the connected console). One Ajv instance is reused; compiled
-// validators are cached per tool and rebuilt on each pairing.
+// (no drift vs. the connected console). A FRESH validator is built per pairing
+// (see rebuildToolValidators) so a prior console's schema cache can never leak
+// into a later one, and advertised schemas are sanitized first (see
+// sanitizeAdvertisedSchema).
 type ArgValidator = (input: unknown) => { valid: boolean; errorMessage?: string }
-const schemaValidator = new AjvJsonSchemaValidator()
+
+// Schema keywords stripped from every advertised schema before compilation:
+//  - `$id`: the SDK validator caches compiled schemas by `$id` for the life of
+//    the Ajv instance, so two tools (or two pairings) advertising a colliding
+//    `$id` would silently reuse the first one's validator — downgrading the
+//    trust boundary for the second tool.
+//  - `pattern` / `patternProperties` / `format`: console-supplied regexes run
+//    synchronously on the single event loop during validation, so a
+//    catastrophic-backtracking pattern (e.g. `^(a+)+$`) plus a crafted arg
+//    would freeze the whole bridge (ReDoS). The bundled QuestDB schemas use
+//    none of these, so stripping them costs no real validation fidelity.
+const SCHEMA_KEYS_TO_STRIP = new Set([
+  "$id",
+  "pattern",
+  "patternProperties",
+  "format",
+])
+
+const sanitizeAdvertisedSchema = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(sanitizeAdvertisedSchema)
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {}
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      if (SCHEMA_KEYS_TO_STRIP.has(key)) continue
+      out[key] = sanitizeAdvertisedSchema(v)
+    }
+    return out
+  }
+  return value
+}
+
+const MAX_TOOL_ARG_BYTES = 4 * 1024 * 1024
 
 export type BrowserConn = {
   send: (msg: AnyMessage) => void
@@ -253,6 +297,25 @@ export class BridgeSession {
         isError: true,
       })
     }
+    let argsByteLength: number
+    try {
+      argsByteLength = JSON.stringify(args).length
+    } catch {
+      argsByteLength = Number.POSITIVE_INFINITY
+    }
+    if (argsByteLength > MAX_TOOL_ARG_BYTES) {
+      return Promise.resolve({
+        content: [
+          {
+            type: "text",
+            text:
+              `VALIDATION_ERROR: arguments for \`${toolName}\` exceed the ` +
+              `${MAX_TOOL_ARG_BYTES}-byte limit.`,
+          },
+        ],
+        isError: true,
+      })
+    }
     const validate = this.toolValidators.get(toolName)
     if (validate) {
       const { valid, errorMessage } = validate(args)
@@ -293,9 +356,7 @@ export class BridgeSession {
             requestId,
           } satisfies CancelMessage)
           resolve({
-            content: [
-              { type: "text", text: `timeout: tool call exceeded ${deadlineMs}ms` },
-            ],
+            content: [{ type: "text", text: buildTimeoutText(deadlineMs) }],
             isError: true,
           })
         }, deadlineMs)
@@ -416,6 +477,12 @@ export class BridgeSession {
     )
 
     this.state = "S1"
+    for (const call of this.inflight.values()) {
+      if (call.graceTimer) {
+        clearTimeout(call.graceTimer)
+        call.graceTimer = null
+      }
+    }
     const ack: HelloAckMessage = {
       v: MCP_BRIDGE_VERSION,
       type: "hello_ack",
@@ -538,11 +605,17 @@ export class BridgeSession {
 
   private rebuildToolValidators(): void {
     this.toolValidators.clear()
+    const validator = new AjvJsonSchemaValidator()
     for (const tool of this.browserTools) {
       try {
         this.toolValidators.set(
           tool.name,
-          schemaValidator.getValidator(tool.inputSchema),
+          validator.getValidator(
+            sanitizeAdvertisedSchema(tool.inputSchema) as Record<
+              string,
+              unknown
+            >,
+          ),
         )
       } catch {
         // unvalidatable schema → skip (fail-open for that tool only)

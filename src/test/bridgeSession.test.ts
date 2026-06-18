@@ -360,6 +360,21 @@ describe("BridgeSession — tool calls", () => {
     expect(cancel).toBeTruthy()
   })
 
+  it("timeout result carries do-not-retry guidance for data-modifying calls", async () => {
+    vi.useFakeTimers()
+    const { session } = makeSession({ getDeadlineMs: () => 100 })
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    const result = session.callBrowserTool("run_cell", {})
+    vi.advanceTimersByTime(200)
+    const out = await result
+    expect(out.isError).toBe(true)
+    expect(out.content[0].text).toMatch(/timeout/)
+    expect(out.content[0].text).toMatch(/may have completed/)
+    expect(out.content[0].text).toMatch(/do NOT retry/)
+  })
+
   it("returns BRIDGE_NOT_PAIRED when no browser and a tool is called", async () => {
     const { session } = makeSession()
     const out = await session.callBrowserTool("list_cells", {})
@@ -479,6 +494,75 @@ describe("BridgeSession — disconnect", () => {
     const out = await result
     expect(out.isError).toBe(false)
     expect(out.content[0].text).toBe("ok")
+  })
+
+  it("clears the grace timer on reconnect so a long call survives past the grace window", async () => {
+    vi.useFakeTimers()
+    const { session } = makeSession({ getDeadlineMs: () => null })
+    const a = makeFakeBrowser()
+    session.attachBrowser(a.conn)
+    sendHello(session)
+    const result = session.callBrowserTool("list_cells", {})
+    const call = a.sent.find((m) => m.type === "tool_call") as {
+      requestId: string
+    }
+    // Drop, then reconnect well within the grace window.
+    session.handleSocketClose(a.conn)
+    vi.advanceTimersByTime(3_000)
+    const b = makeFakeBrowser()
+    session.attachBrowser(b.conn)
+    sendHello(session)
+    // Now let MORE than a full grace window elapse since the original drop. The
+    // reconnected console is still executing and only flushes its result now —
+    // without clearing grace on reconnect, the call would already be failed.
+    vi.advanceTimersByTime(40_000)
+    session.handleMessage({
+      v: MCP_BRIDGE_VERSION,
+      type: "tool_result",
+      requestId: call.requestId,
+      content: [{ type: "text", text: "ok" }],
+      isError: false,
+    })
+    const out = await result
+    expect(out.isError).toBe(false)
+    expect(out.content[0].text).toBe("ok")
+  })
+
+  it("re-arms a fresh grace window on a second disconnect after reconnect", async () => {
+    vi.useFakeTimers()
+    const { session } = makeSession({ getDeadlineMs: () => null })
+    const a = makeFakeBrowser()
+    session.attachBrowser(a.conn)
+    sendHello(session)
+    const result = session.callBrowserTool("list_cells", {})
+    const call = a.sent.find((m) => m.type === "tool_call") as {
+      requestId: string
+    }
+    // Drop #1 at t=0 → grace would fire at t=30s.
+    session.handleSocketClose(a.conn)
+    vi.advanceTimersByTime(5_000) // t=5s
+    const b = makeFakeBrowser()
+    session.attachBrowser(b.conn)
+    sendHello(session) // reconnect #1 clears grace
+    vi.advanceTimersByTime(5_000) // t=10s
+    // Drop #2: a fresh 30s grace must start now (→ t=40s), not stay anchored to
+    // drop #1's t=30s.
+    session.handleSocketClose(b.conn)
+    vi.advanceTimersByTime(25_000) // t=35s: past drop #1's window, before drop #2's
+    // Still alive — reconnect and flush the result.
+    const c = makeFakeBrowser()
+    session.attachBrowser(c.conn)
+    sendHello(session)
+    session.handleMessage({
+      v: MCP_BRIDGE_VERSION,
+      type: "tool_result",
+      requestId: call.requestId,
+      content: [{ type: "text", text: "late-but-ok" }],
+      isError: false,
+    })
+    const out = await result
+    expect(out.isError).toBe(false)
+    expect(out.content[0].text).toBe("late-but-ok")
   })
 
   it("fails a disconnect-spanning call after the grace window with an unverified-completion warning", async () => {
@@ -726,6 +810,81 @@ describe("BridgeSession — tool argument validation", () => {
     sendHello(session) // default helloTools use { type: "object" }
 
     const pending = session.callBrowserTool("list_cells", { anything: 1 })
+    const call = browser.sent.find((m) => m.type === "tool_call")
+    expect(call).toBeDefined()
+    resolvePending(session, call)
+    expect((await pending).isError).toBe(false)
+  })
+
+  it("strips a catastrophic-backtracking pattern (no ReDoS) but keeps type validation", async () => {
+    const redosTools: ToolSchema[] = [
+      {
+        name: "run_query",
+        description: "x",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: { query: { type: "string", pattern: "^(a+)+$" } },
+          required: ["query"],
+        },
+      },
+    ]
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session, "the-token", redosTools)
+
+    // A string that would hang an unguarded ^(a+)+$ matcher. With the pattern
+    // stripped, validation returns immediately and accepts it (type is fine).
+    const evil = "a".repeat(40) + "!"
+    const pending = session.callBrowserTool("run_query", { query: evil })
+    const call = browser.sent.find((m) => m.type === "tool_call")
+    expect(call).toBeDefined()
+    resolvePending(session, call)
+    expect((await pending).isError).toBe(false)
+
+    // Validation is not disabled wholesale — a type mismatch is still rejected.
+    const bad = await session.callBrowserTool("run_query", { query: 123 })
+    expect(bad.isError).toBe(true)
+    expect(bad.content[0]?.text).toMatch(/VALIDATION_ERROR/)
+  })
+
+  it("does not let two tools sharing an $id reuse one validator", async () => {
+    const collidingTools: ToolSchema[] = [
+      {
+        name: "loose_tool",
+        description: "x",
+        inputSchema: {
+          $id: "shared-id",
+          type: "object",
+          additionalProperties: true,
+        },
+      },
+      {
+        name: "strict_tool",
+        description: "x",
+        inputSchema: {
+          $id: "shared-id",
+          type: "object",
+          additionalProperties: false,
+          properties: { n: { type: "number" } },
+          required: ["n"],
+        },
+      },
+    ]
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session, "the-token", collidingTools)
+
+    // strict_tool must validate against ITS OWN schema, not loose_tool's (which
+    // would happen if the shared validator reused the cached $id entry).
+    const res = await session.callBrowserTool("strict_tool", { n: "nope" })
+    expect(res.isError).toBe(true)
+    expect(res.content[0]?.text).toMatch(/VALIDATION_ERROR/)
+
+    // loose_tool still accepts arbitrary args.
+    const pending = session.callBrowserTool("loose_tool", { whatever: 1 })
     const call = browser.sent.find((m) => m.type === "tool_call")
     expect(call).toBeDefined()
     resolvePending(session, call)
