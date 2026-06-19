@@ -71,6 +71,12 @@ const sendHello = (
   })
 }
 
+const getSessionId = (session: BridgeSession): string => {
+  const snap = session.getPairingSnapshot()
+  if (!snap.paired) throw new Error("expected paired")
+  return snap.sessionId
+}
+
 afterEach(() => {
   vi.useRealTimers()
 })
@@ -590,16 +596,16 @@ describe("BridgeSession — disconnect", () => {
     const a = makeFakeBrowser()
     session.attachBrowser(a.conn)
     sendHello(session)
+    const sessionId = getSessionId(session)
     const result = session.callBrowserTool("list_cells", {})
     const call = a.sent.find((m) => m.type === "tool_call") as {
       requestId: string
     }
     session.handleSocketClose(a.conn)
 
-    // Console reconnects ~3s later and flushes the queued tool_result.
     vi.advanceTimersByTime(3_000)
     const b = makeFakeBrowser()
-    session.attachBrowser(b.conn)
+    session.attachBrowser(b.conn, sessionId)
     sendHello(session)
     session.handleMessage({
       v: MCP_BRIDGE_VERSION,
@@ -620,15 +626,16 @@ describe("BridgeSession — disconnect", () => {
     const a = makeFakeBrowser()
     session.attachBrowser(a.conn)
     sendHello(session)
+    const sessionId = getSessionId(session)
     const result = session.callBrowserTool("list_cells", {})
     const call = a.sent.find((m) => m.type === "tool_call") as {
       requestId: string
     }
-    // Drop, then reconnect well within the grace window.
+    // Drop, then the same console reconnects well within the grace window.
     session.handleSocketClose(a.conn)
     vi.advanceTimersByTime(3_000)
     const b = makeFakeBrowser()
-    session.attachBrowser(b.conn)
+    session.attachBrowser(b.conn, sessionId)
     sendHello(session)
     // Now let MORE than a full grace window elapse since the original drop. The
     // reconnected console is still executing and only flushes its result now —
@@ -652,6 +659,7 @@ describe("BridgeSession — disconnect", () => {
     const a = makeFakeBrowser()
     session.attachBrowser(a.conn)
     sendHello(session)
+    const sessionId1 = getSessionId(session)
     const result = session.callBrowserTool("list_cells", {})
     const call = a.sent.find((m) => m.type === "tool_call") as {
       requestId: string
@@ -660,16 +668,16 @@ describe("BridgeSession — disconnect", () => {
     session.handleSocketClose(a.conn)
     vi.advanceTimersByTime(5_000) // t=5s
     const b = makeFakeBrowser()
-    session.attachBrowser(b.conn)
-    sendHello(session) // reconnect #1 clears grace
+    session.attachBrowser(b.conn, sessionId1)
+    sendHello(session) // reconnect #1 clears grace and mints a new id
+    const sessionId2 = getSessionId(session)
     vi.advanceTimersByTime(5_000) // t=10s
     // Drop #2: a fresh 30s grace must start now (→ t=40s), not stay anchored to
     // drop #1's t=30s.
     session.handleSocketClose(b.conn)
     vi.advanceTimersByTime(25_000) // t=35s: past drop #1's window, before drop #2's
-    // Still alive — reconnect and flush the result.
     const c = makeFakeBrowser()
-    session.attachBrowser(c.conn)
+    session.attachBrowser(c.conn, sessionId2)
     sendHello(session)
     session.handleMessage({
       v: MCP_BRIDGE_VERSION,
@@ -700,6 +708,56 @@ describe("BridgeSession — disconnect", () => {
     expect(out.content[0].text).toMatch(/browser_disconnected/)
     expect(out.content[0].text).toMatch(/may have completed/)
     expect(out.content[0].text).toMatch(/do NOT retry/)
+  })
+
+  it("keeps the orphaned call's grace running when a different console pairs during the window", async () => {
+    // Given a paired console with an in-flight call, with grace as the only
+    // settler (null deadline) so a wrongly-cancelled grace would leak forever
+    vi.useFakeTimers()
+    const { session } = makeSession({ getDeadlineMs: () => null })
+    const a = makeFakeBrowser()
+    session.attachBrowser(a.conn)
+    sendHello(session)
+    const result = session.callBrowserTool("list_cells", {})
+
+    // When it drops and a different console pairs within the window (a new tab,
+    // so no echoed sessionId)
+    session.handleSocketClose(a.conn)
+    vi.advanceTimersByTime(5_000)
+    const b = makeFakeBrowser()
+    session.attachBrowser(b.conn)
+    sendHello(session)
+    expect(session.getState()).toBe("S1")
+
+    // Then the orphaned call still fails at the grace deadline, not stranded
+    vi.advanceTimersByTime(25_000)
+    const out = await result
+    expect(out.isError).toBe(true)
+    expect(out.content[0].text).toMatch(/browser_disconnected/)
+    expect(out.content[0].text).toMatch(/do NOT retry/)
+  })
+
+  it("keeps the orphaned call's grace running when a reconnect echoes a wrong sessionId", async () => {
+    // Given a paired console with an in-flight call and a null deadline
+    vi.useFakeTimers()
+    const { session } = makeSession({ getDeadlineMs: () => null })
+    const a = makeFakeBrowser()
+    session.attachBrowser(a.conn)
+    sendHello(session)
+    const result = session.callBrowserTool("list_cells", {})
+
+    // When it drops and a socket reconnects presenting a non-matching sessionId
+    session.handleSocketClose(a.conn)
+    vi.advanceTimersByTime(5_000)
+    const b = makeFakeBrowser()
+    session.attachBrowser(b.conn, "s-not-the-session")
+    sendHello(session)
+
+    // Then grace stands and the call fails at the deadline
+    vi.advanceTimersByTime(25_000)
+    const out = await result
+    expect(out.isError).toBe(true)
+    expect(out.content[0].text).toMatch(/browser_disconnected/)
   })
 
   it("a result flushed after grace expiry is dropped, not double-resolved", async () => {

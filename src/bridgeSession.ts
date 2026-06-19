@@ -167,6 +167,8 @@ export class BridgeSession {
   private helloTimer: ReturnType<typeof setTimeout> | null = null
   private closeFallbackTimer: ReturnType<typeof setTimeout> | null = null
   private connClosing = false
+  private detachedSessionId: string | null = null
+  private connectingLastSessionId: string | undefined = undefined
 
   constructor(private config: BridgeSessionConfig) {}
 
@@ -239,12 +241,14 @@ export class BridgeSession {
   ): "accepted" | "superseded" {
     if (this.browser) {
       if (this.isReconnectOfLiveSession(lastSessionId)) {
+        this.connectingLastSessionId = lastSessionId
         this.resumeSessionOn(conn)
         return "accepted"
       }
       return "superseded"
     }
     this.browser = conn
+    this.connectingLastSessionId = lastSessionId
     this.armHelloTimer()
     return "accepted"
   }
@@ -550,10 +554,12 @@ export class BridgeSession {
     )
 
     this.state = "S1"
-    for (const call of this.inflight.values()) {
-      if (call.graceTimer) {
-        clearTimeout(call.graceTimer)
-        call.graceTimer = null
+    const isSameConsoleReconnect =
+      this.connectingLastSessionId !== undefined &&
+      this.connectingLastSessionId === this.detachedSessionId
+    if (isSameConsoleReconnect) {
+      for (const call of this.inflight.values()) {
+        this.cancelDisconnectGrace(call)
       }
     }
     const ack: HelloAckMessage = {
@@ -693,6 +699,7 @@ export class BridgeSession {
   }
 
   private transitionToS0(): void {
+    this.detachedSessionId = this.sessionId
     this.state = "S0"
     this.browserTools = []
     this.toolValidators.clear()
@@ -717,6 +724,12 @@ export class BridgeSession {
         isError: true,
       })
     }, RECONNECT_GRACE_MS)
+  }
+
+  private cancelDisconnectGrace(call: InflightCall): void {
+    if (!call.graceTimer) return
+    clearTimeout(call.graceTimer)
+    call.graceTimer = null
   }
 }
 
