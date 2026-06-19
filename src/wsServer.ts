@@ -211,7 +211,15 @@ export const startWsServer = (config: WsServerConfig) => {
       return
     }
 
+    // ws.close() still delivers frames already buffered behind the offending
+    // one, so gate the handler to keep them off the session.
+    let closing = false
+    const closeOnViolation = (reason: string): void => {
+      closing = true
+      ws.close(WS_CLOSE_CODES.protocol_violation, reason)
+    }
     ws.on("message", (data) => {
+      if (closing) return
       let parsed: AnyMessage
       try {
         let text: string
@@ -226,7 +234,7 @@ export const startWsServer = (config: WsServerConfig) => {
         }
         parsed = JSON.parse(text) as AnyMessage
       } catch {
-        ws.close(WS_CLOSE_CODES.protocol_violation, "malformed_json")
+        closeOnViolation("malformed_json")
         return
       }
       if (
@@ -235,7 +243,7 @@ export const startWsServer = (config: WsServerConfig) => {
         typeof (parsed as { type?: unknown }).type !== "string" ||
         typeof (parsed as { v?: unknown }).v !== "string"
       ) {
-        ws.close(WS_CLOSE_CODES.protocol_violation, "malformed_message")
+        closeOnViolation("malformed_message")
         return
       }
       config.session.handleMessage(parsed)

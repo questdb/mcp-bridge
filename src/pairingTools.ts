@@ -39,7 +39,7 @@ export const WAIT_TOOL: ToolSchema = {
     "sees nothing actionable. " +
     "Blocks for `timeout_ms` (default 50 s, max 50 s — sized to fit " +
     "under typical MCP client tool-call timeouts). " +
-    "Returns `{paired:true, consoleOrigin, permissions:{read,write}}` " +
+    "Returns `{paired:true, consoleOrigin, permissions:{grantSchemaAccess,read,write}}` " +
     "on success, or `{paired:false, reason:'timeout', retryCount, " +
     "maxRetriesHint:10}` on timeout — call again to keep waiting (up " +
     "to ~10 retries / ~8 min) until the user pairs. " +
@@ -52,9 +52,10 @@ export const WAIT_TOOL: ToolSchema = {
     "assistantNextActions}` — show the `userMessage` verbatim and STOP " +
     "polling; pairing cannot succeed until the user reinstalls the bridge " +
     "version named in the message. " +
-    "`permissions` describes the user-granted MCP scopes: `read=true` " +
-    "allows schema introspection and DQL (SELECT/SHOW); `write=true` " +
-    "additionally allows DDL/DML (CREATE/INSERT/UPDATE/DELETE/DROP/…). " +
+    "`permissions` describes the user-granted MCP scopes: " +
+    "`grantSchemaAccess=true` allows schema introspection (tables/columns); " +
+    "`read=true` allows DQL (SELECT/SHOW); `write=true` additionally allows " +
+    "DDL/DML (CREATE/INSERT/UPDATE/DELETE/DROP/…). " +
     "Operations outside the granted scope return PERMISSION_DENIED " +
     "with a message naming the missing scope — adjust your plan " +
     "accordingly rather than retrying.",

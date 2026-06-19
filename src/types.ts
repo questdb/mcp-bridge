@@ -19,6 +19,7 @@ export type ToolResultPayload = {
 }
 
 export type MCPPermissions = {
+  grantSchemaAccess: boolean
   read: boolean
   write: boolean
 }

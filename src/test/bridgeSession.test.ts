@@ -5,7 +5,18 @@ import {
   type BridgeSessionConfig,
 } from "../bridgeSession.js"
 import { MCP_BRIDGE_VERSION } from "../protocolVersion.js"
-import { WS_CLOSE_CODES, type AnyMessage, type ToolSchema } from "../types.js"
+import {
+  WS_CLOSE_CODES,
+  type AnyMessage,
+  type MCPPermissions,
+  type ToolSchema,
+} from "../types.js"
+
+const grantedPermissions: MCPPermissions = {
+  grantSchemaAccess: true,
+  read: true,
+  write: true,
+}
 
 const helloTools: ToolSchema[] = [
   { name: "list_cells", description: "x", inputSchema: { type: "object" } },
@@ -56,7 +67,7 @@ const sendHello = (
   session: BridgeSession,
   token = "the-token",
   tools = helloTools,
-  permissions: { read: boolean; write: boolean } = { read: true, write: true },
+  permissions: MCPPermissions = grantedPermissions,
   expectedBridgeVersion: string = MCP_BRIDGE_VERSION,
 ) => {
   session.handleMessage({
@@ -99,27 +110,95 @@ describe("BridgeSession — pairing handshake", () => {
     const { session } = makeSession()
     const browser = makeFakeBrowser()
     session.attachBrowser(browser.conn)
-    sendHello(session, "the-token", helloTools, { read: true, write: false })
+    sendHello(session, "the-token", helloTools, {
+      grantSchemaAccess: true,
+      read: true,
+      write: false,
+    })
     const snap = session.getPairingSnapshot()
     if (!snap.paired) throw new Error("expected paired")
-    expect(snap.permissions).toEqual({ read: true, write: false })
+    expect(snap.permissions).toEqual({
+      grantSchemaAccess: true,
+      read: true,
+      write: false,
+    })
   })
 
   it("updates the mirrored permissions when a fresh hello arrives on a new session", () => {
     const { session } = makeSession()
     const a = makeFakeBrowser()
     session.attachBrowser(a.conn)
-    sendHello(session, "the-token", helloTools, { read: true, write: true })
+    sendHello(session, "the-token", helloTools, grantedPermissions)
     expect(session.getPairingSnapshot()).toMatchObject({
-      permissions: { read: true, write: true },
+      permissions: grantedPermissions,
     })
 
     session.handleSocketClose(a.conn)
     const b = makeFakeBrowser()
     session.attachBrowser(b.conn)
-    sendHello(session, "the-token", helloTools, { read: false, write: false })
+    sendHello(session, "the-token", helloTools, {
+      grantSchemaAccess: false,
+      read: false,
+      write: false,
+    })
     expect(session.getPairingSnapshot()).toMatchObject({
-      permissions: { read: false, write: false },
+      permissions: { grantSchemaAccess: false, read: false, write: false },
+    })
+  })
+
+  it("denies all permissions when hello.permissions is missing", () => {
+    // Given a session awaiting a hello
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+
+    // When the hello omits permissions entirely
+    session.handleMessage({
+      v: MCP_BRIDGE_VERSION,
+      type: "hello",
+      token: "the-token",
+      userAgent: "test",
+      expectedBridgeVersion: MCP_BRIDGE_VERSION,
+      consoleOrigin: "http://127.0.0.1:9000",
+      tools: helloTools,
+    } as unknown as Parameters<BridgeSession["handleMessage"]>[0])
+
+    // Then it pairs but grants nothing
+    expect(session.getState()).toBe("S1")
+    const snap = session.getPairingSnapshot()
+    if (!snap.paired) throw new Error("expected paired")
+    expect(snap.permissions).toEqual({
+      grantSchemaAccess: false,
+      read: false,
+      write: false,
+    })
+  })
+
+  it("denies all permissions when hello.permissions is ill-typed", () => {
+    // Given a session awaiting a hello
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+
+    // When the hello carries non-boolean permissions
+    session.handleMessage({
+      v: MCP_BRIDGE_VERSION,
+      type: "hello",
+      token: "the-token",
+      userAgent: "test",
+      expectedBridgeVersion: MCP_BRIDGE_VERSION,
+      consoleOrigin: "http://127.0.0.1:9000",
+      tools: helloTools,
+      permissions: { grantSchemaAccess: 1, read: "yes", write: 1 },
+    } as unknown as Parameters<BridgeSession["handleMessage"]>[0])
+
+    // Then it grants nothing
+    const snap = session.getPairingSnapshot()
+    if (!snap.paired) throw new Error("expected paired")
+    expect(snap.permissions).toEqual({
+      grantSchemaAccess: false,
+      read: false,
+      write: false,
     })
   })
 
@@ -272,7 +351,7 @@ describe("BridgeSession — pairing handshake", () => {
       session,
       "the-token",
       helloTools,
-      { read: true, write: true },
+      grantedPermissions,
       "999.0.0",
     )
     expect(browser.closed?.code).toBe(WS_CLOSE_CODES.major_version_mismatch)
@@ -288,7 +367,7 @@ describe("BridgeSession — pairing handshake", () => {
       session,
       "the-token",
       helloTools,
-      { read: true, write: true },
+      grantedPermissions,
       "999.0.0",
     )
     const snap = session.getPairingSnapshot()
@@ -318,7 +397,7 @@ describe("BridgeSession — pairing handshake", () => {
       session,
       "the-token",
       helloTools,
-      { read: true, write: true },
+      grantedPermissions,
       "999.0.0",
     )
     const waited = await pending
@@ -337,7 +416,7 @@ describe("BridgeSession — pairing handshake", () => {
       session,
       "the-token",
       helloTools,
-      { read: true, write: true },
+      grantedPermissions,
       `${parseInt(MCP_BRIDGE_VERSION.split(".")[0], 10)}.9999.99`,
     )
     expect(session.getState()).toBe("S1")
@@ -808,7 +887,7 @@ describe("BridgeSession — disconnect", () => {
     const { session } = makeSession()
     const a = makeFakeBrowser()
     session.attachBrowser(a.conn)
-    sendHello(session, "the-token", helloTools, { read: true, write: true }, "999.0.0")
+    sendHello(session, "the-token", helloTools, grantedPermissions, "999.0.0")
     // While the refused socket is attached, the snapshot reports incompatible.
     const before = session.getPairingSnapshot()
     if (before.paired) throw new Error("expected unpaired")
@@ -918,7 +997,7 @@ describe("BridgeSession — getPairingSnapshot", () => {
     expect(snap.paired).toBe(true)
     if (snap.paired) {
       expect(snap.consoleOrigin).toBe("http://127.0.0.1:9000")
-      expect(snap.permissions).toEqual({ read: true, write: true })
+      expect(snap.permissions).toEqual(grantedPermissions)
       expect(snap.versionMismatch).toBeNull()
     }
   })
@@ -1227,6 +1306,38 @@ describe("BridgeSession — unvalidatable schema (fail-open)", () => {
       })
     }
     expect((await relayed).isError).toBe(false)
+  })
+
+  it("fails closed when a compiled validator throws at call time (recursive $ref)", async () => {
+    // Given a paired session whose tool advertises a self-recursive $ref schema
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session, "the-token", [
+      {
+        name: "recursive_tool",
+        description: "x",
+        inputSchema: {
+          $defs: {
+            Node: {
+              type: "object",
+              properties: { child: { $ref: "#/$defs/Node" } },
+            },
+          },
+          $ref: "#/$defs/Node",
+        },
+      },
+    ])
+
+    // When called with args deep enough to overflow the validator's stack
+    let arg: Record<string, unknown> = { x: 1 }
+    for (let i = 0; i < 50_000; i++) arg = { child: arg }
+    const res = await session.callBrowserTool("recursive_tool", arg)
+
+    // Then it is rejected, not relayed to the browser
+    expect(res.isError).toBe(true)
+    expect(res.content[0]?.text).toMatch(/VALIDATION_ERROR/)
+    expect(browser.sent.find((m) => m.type === "tool_call")).toBeUndefined()
   })
 })
 

@@ -79,7 +79,7 @@ const hello = (ws: WebSocket): void =>
     expectedBridgeVersion: MCP_BRIDGE_VERSION,
     consoleOrigin: "http://127.0.0.1:9000",
     tools: helloTools,
-    permissions: { read: true, write: true },
+    permissions: { grantSchemaAccess: true, read: true, write: true },
   })
 
 const recv = (ws: WebSocket, timeoutMs = 1000): Promise<AnyMessage> =>
@@ -135,7 +135,7 @@ describe("WebSocket round-trip", () => {
       expectedBridgeVersion: MCP_BRIDGE_VERSION,
       consoleOrigin: "http://127.0.0.1:9000",
       tools: helloTools,
-      permissions: { read: true, write: true },
+      permissions: { grantSchemaAccess: true, read: true, write: true },
     })
     const ack = await recv(ws)
     expect(ack.type).toBe("hello_ack")
@@ -245,7 +245,7 @@ describe("WebSocket round-trip", () => {
       expectedBridgeVersion: MCP_BRIDGE_VERSION,
       consoleOrigin: "http://127.0.0.1:9000",
       tools: helloTools,
-      permissions: { read: true, write: true },
+      permissions: { grantSchemaAccess: true, read: true, write: true },
     })
     await recv(a) // hello_ack
     const b = await open(bridge.port)
@@ -286,6 +286,48 @@ describe("WebSocket round-trip", () => {
     expect(reason).toBe("malformed_message")
   })
 
+  it("does not process a valid frame buffered behind a malformed one (no pairing on a closing socket)", async () => {
+    // Given a connected socket
+    const bridge = await startBridge()
+    teardown.push(bridge.stop)
+    const ws = await open(bridge.port)
+
+    const received: string[] = []
+    ws.on("message", (data) => {
+      received.push(
+        Buffer.isBuffer(data)
+          ? data.toString("utf-8")
+          : Buffer.from(data as ArrayBuffer).toString("utf-8"),
+      )
+    })
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.once("close", (code, reason) =>
+        resolve({ code, reason: reason.toString() }),
+      )
+    })
+
+    // When a malformed frame is followed back-to-back by a valid hello
+    ws.send("{ this is not json")
+    send(ws, {
+      v: MCP_BRIDGE_VERSION,
+      type: "hello",
+      token: TOKEN,
+      userAgent: "test",
+      expectedBridgeVersion: MCP_BRIDGE_VERSION,
+      consoleOrigin: "http://127.0.0.1:9000",
+      tools: helloTools,
+      permissions: { grantSchemaAccess: true, read: true, write: true },
+    })
+
+    // Then the socket closes and the buffered hello never pairs the session
+    const { code, reason } = await closed
+    expect(code).toBe(4005)
+    expect(reason).toBe("malformed_json")
+    expect(received.some((m) => m.includes("hello_ack"))).toBe(false)
+    expect(bridge.session.getState()).toBe("S0")
+    expect(bridge.session.getPairingSnapshot().paired).toBe(false)
+  })
+
   it("closes the WS with 4002 on bad token in hello body", async () => {
     const bridge = await startBridge()
     teardown.push(bridge.stop)
@@ -298,7 +340,7 @@ describe("WebSocket round-trip", () => {
       expectedBridgeVersion: MCP_BRIDGE_VERSION,
       consoleOrigin: "http://127.0.0.1:9000",
       tools: helloTools,
-      permissions: { read: true, write: true },
+      permissions: { grantSchemaAccess: true, read: true, write: true },
     })
     const code = await new Promise<number>((resolve) => {
       ws.once("close", (c) => resolve(c))
@@ -324,7 +366,7 @@ describe("WebSocket round-trip", () => {
           inputSchema: { type: "object" },
         },
       ],
-      permissions: { read: true, write: true },
+      permissions: { grantSchemaAccess: true, read: true, write: true },
     })
     await recv(ws) // hello_ack
     const args = {

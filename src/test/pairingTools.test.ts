@@ -96,7 +96,7 @@ describe("get_pairing_credentials handler", () => {
           paired: true,
           sessionId: "s1",
           consoleOrigin: "http://127.0.0.1:9000",
-          permissions: { read: true, write: false },
+          permissions: { grantSchemaAccess: true, read: true, write: false },
           versionMismatch: null,
         }),
       }),
@@ -105,7 +105,7 @@ describe("get_pairing_credentials handler", () => {
     const parsed = JSON.parse(out.content[0].text) as Record<string, unknown>
     expect(parsed.paired).toBe(true)
     expect(parsed.consoleOrigin).toBe("http://127.0.0.1:9000")
-    expect(parsed.permissions).toEqual({ read: true, write: false })
+    expect(parsed.permissions).toEqual({ grantSchemaAccess: true, read: true, write: false })
     expect(typeof parsed.message).toBe("string")
     expect(parsed.warning).toBeUndefined()
   })
@@ -117,7 +117,7 @@ describe("get_pairing_credentials handler", () => {
           paired: true,
           sessionId: "s1",
           consoleOrigin: "http://127.0.0.1:9000",
-          permissions: { read: true, write: true },
+          permissions: { grantSchemaAccess: true, read: true, write: true },
           versionMismatch: {
             bridgeVersion: "0.1.0",
             expectedBridgeVersion: "0.2.0",
@@ -185,7 +185,7 @@ describe("wait_for_pairing handler", () => {
           paired: true,
           sessionId: "s1",
           consoleOrigin: "http://127.0.0.1:9000",
-          permissions: { read: true, write: true },
+          permissions: { grantSchemaAccess: true, read: true, write: true },
           versionMismatch: null,
         }),
       }),
@@ -194,7 +194,7 @@ describe("wait_for_pairing handler", () => {
     const parsed = JSON.parse(out.content[0].text) as Record<string, unknown>
     expect(parsed.paired).toBe(true)
     expect(parsed.consoleOrigin).toBe("http://127.0.0.1:9000")
-    expect(parsed.permissions).toEqual({ read: true, write: true })
+    expect(parsed.permissions).toEqual({ grantSchemaAccess: true, read: true, write: true })
     expect(parsed.warning).toBeUndefined()
   })
 
@@ -211,7 +211,7 @@ describe("wait_for_pairing handler", () => {
           paired: true,
           sessionId: "s1",
           consoleOrigin: "http://127.0.0.1:9000",
-          permissions: { read: true, write: true },
+          permissions: { grantSchemaAccess: true, read: true, write: true },
           versionMismatch: null,
         }),
     })
@@ -220,7 +220,7 @@ describe("wait_for_pairing handler", () => {
     const parsed = JSON.parse(out.content[0].text) as Record<string, unknown>
     expect(parsed.paired).toBe(true)
     expect(parsed.consoleOrigin).toBe("http://127.0.0.1:9000")
-    expect(parsed.permissions).toEqual({ read: true, write: true })
+    expect(parsed.permissions).toEqual({ grantSchemaAccess: true, read: true, write: true })
     expect(parsed.warning).toBeUndefined()
   })
 
@@ -231,7 +231,7 @@ describe("wait_for_pairing handler", () => {
           paired: true,
           sessionId: "s",
           consoleOrigin: "http://127.0.0.1:9000",
-          permissions: { read: true, write: true },
+          permissions: { grantSchemaAccess: true, read: true, write: true },
           versionMismatch: {
             bridgeVersion: "0.1.0",
             expectedBridgeVersion: "0.2.0",
@@ -325,7 +325,7 @@ describe("wait_for_pairing handler", () => {
           paired: true,
           sessionId: "s",
           consoleOrigin: "http://127.0.0.1:9000",
-          permissions: { read: true, write: true },
+          permissions: { grantSchemaAccess: true, read: true, write: true },
           versionMismatch: null,
         })
       },

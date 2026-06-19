@@ -27,7 +27,7 @@ describe("safePairingCredentialsSummary — token/credential redaction", () => {
           wsUrl,
           token,
           consoleOrigin: "http://127.0.0.1:9000",
-          permissions: { read: true, write: true },
+          permissions: { grantSchemaAccess: true, read: true, write: true },
           nextStep: "wait_for_pairing",
         }),
       },

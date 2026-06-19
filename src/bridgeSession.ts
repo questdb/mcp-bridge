@@ -101,6 +101,12 @@ const sanitizeAdvertisedSchema = (value: unknown): unknown => {
 
 const MAX_TOOL_ARG_BYTES = 4 * 1024 * 1024
 
+const DENIED_PERMISSIONS: MCPPermissions = {
+  grantSchemaAccess: false,
+  read: false,
+  write: false,
+}
+
 export type BrowserConn = {
   send: (msg: AnyMessage) => void
   close: (code: number, reason: string) => void
@@ -158,7 +164,7 @@ export class BridgeSession {
   // socket is closed, but we keep the rejected version so the pairing tools can
   // hand the agent an actionable upgrade message instead of a silent timeout.
   private incompatibleConsole: VersionMismatch | null = null
-  private browserPermissions: MCPPermissions = { read: true, write: true }
+  private browserPermissions: MCPPermissions = DENIED_PERMISSIONS
   private inflight = new Map<string, InflightCall>()
   private pairWaiters: PairWaiter[] = []
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
@@ -392,7 +398,15 @@ export class BridgeSession {
     }
     const validate = this.toolValidators.get(toolName)
     if (validate) {
-      const { valid, errorMessage } = validate(args)
+      let valid: boolean
+      let errorMessage: string | undefined
+      try {
+        // A compiled validator can still throw at call time (e.g. recursive $ref).
+        ;({ valid, errorMessage } = validate(args))
+      } catch (err) {
+        valid = false
+        errorMessage = err instanceof Error ? err.message : "validator threw"
+      }
       if (!valid) {
         return Promise.resolve({
           content: [
@@ -547,7 +561,9 @@ export class BridgeSession {
     this.browserConsoleOrigin = msg.consoleOrigin
     this.browserTools = msg.tools
     this.rebuildToolValidators()
-    this.browserPermissions = msg.permissions
+    this.browserPermissions = isValidPermissions(msg.permissions)
+      ? msg.permissions
+      : DENIED_PERMISSIONS
     this.config.log?.(
       "INFO",
       `browser paired: console=${msg.consoleOrigin} expectedBridge=${msg.expectedBridgeVersion} actualBridge=${MCP_BRIDGE_VERSION} ua=${msg.userAgent}`,
@@ -707,7 +723,9 @@ export class BridgeSession {
     this.incompatibleConsole = null
     // In-flight calls survive the disconnect: the console flushes their
     // results after a reconnect hello_ack, and handleToolResult still finds
-    // them by requestId. Only grace expiry fails them.
+    // them by requestId. They are failed early only if the per-tool deadline
+    // (untouched here) fires before grace expiry; both carry the same
+    // do-not-blindly-retry guidance.
     for (const call of this.inflight.values()) {
       this.scheduleDisconnectGrace(call)
     }
@@ -763,6 +781,14 @@ const isValidToolList = (
   }
   return true
 }
+
+const isValidPermissions = (value: unknown): value is MCPPermissions =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as { grantSchemaAccess?: unknown }).grantSchemaAccess ===
+    "boolean" &&
+  typeof (value as { read?: unknown }).read === "boolean" &&
+  typeof (value as { write?: unknown }).write === "boolean"
 
 const isValidToolContent = (content: unknown): content is ToolContent[] => {
   if (!Array.isArray(content)) return false
