@@ -109,6 +109,73 @@ const SERVER_INSTRUCTIONS = [
   "  recent user events; consult it before answering.",
 ].join("\n")
 
+type PairingHandlers = {
+  handleConnectWebConsole: () => ToolResultPayload
+  handleWaitForPairing: (
+    args: { timeout_ms?: number } | undefined,
+  ) => Promise<ToolResultPayload>
+}
+
+type DispatchContext = {
+  session: Pick<BridgeSession, "callBrowserTool">
+  pairing: PairingHandlers
+  log?: Log
+}
+
+export const dispatchToolCall = async (
+  ctx: DispatchContext,
+  name: string,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<ToolResultPayload> => {
+  const { session, pairing, log } = ctx
+  log?.("INFO", `tool_call: ${name}`)
+  log?.("DEBUG", `  args: ${JSON.stringify(args) ?? "undefined"}`)
+
+  try {
+    let result: ToolResultPayload
+    if (isPairingToolName(name)) {
+      result =
+        name === "get_pairing_credentials"
+          ? pairing.handleConnectWebConsole()
+          : await pairing.handleWaitForPairing(args)
+    } else {
+      result = await session.callBrowserTool(name, args, signal)
+    }
+    const isError = result.isError === true
+    log?.(
+      isError ? "ERROR" : "INFO",
+      `tool_result: ${name} ${isError ? "error" : "ok"}`,
+    )
+    if (name === "get_pairing_credentials") {
+      const summary = safePairingCredentialsSummary(result.content)
+      if (summary !== null) {
+        log?.("DEBUG", `  content: ${summary}`)
+      }
+    } else {
+      log?.("DEBUG", `  content: ${JSON.stringify(result.content)}`)
+    }
+    return { content: result.content, isError }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    log?.("ERROR", `tool_result: ${name} internal_error ${errMsg}`)
+    if (err instanceof Error && err.stack) {
+      log?.("DEBUG", `  stack: ${err.stack}`)
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            "INTERNAL_ERROR: the bridge failed to forward this call. " +
+            "Retry; if the failure persists, refresh the browser tab.",
+        },
+      ],
+      isError: true,
+    }
+  }
+}
+
 type StartMcpServerArgs = {
   session: BridgeSession
   log?: Log
@@ -177,60 +244,14 @@ export const startMcpServer = async ({
     tools: STATIC_TOOL_LIST,
   }))
 
-  server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
-    const name = req.params.name
-    const args = req.params.arguments ?? {}
-
-    log?.("INFO", `tool_call: ${name}`)
-    log?.("DEBUG", `  args: ${JSON.stringify(args) ?? "undefined"}`)
-
-    try {
-      let result: ToolResultPayload
-      if (isPairingToolName(name)) {
-        if (name === "get_pairing_credentials") {
-          result = handleConnectWebConsole()
-        } else {
-          result = await handleWaitForPairing(args)
-        }
-      } else {
-        result = await session.callBrowserTool(name, args, extra.signal)
-      }
-      const isError = result.isError === true
-      log?.(
-        isError ? "ERROR" : "INFO",
-        `tool_result: ${name} ${isError ? "error" : "ok"}`,
-      )
-      if (name === "get_pairing_credentials") {
-        const summary = safePairingCredentialsSummary(result.content)
-        if (summary !== null) {
-          log?.("DEBUG", `  content: ${summary}`)
-        }
-      } else {
-        log?.("DEBUG", `  content: ${JSON.stringify(result.content)}`)
-      }
-      return {
-        content: result.content,
-        isError,
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      log?.("ERROR", `tool_result: ${name} internal_error ${errMsg}`)
-      if (err instanceof Error && err.stack) {
-        log?.("DEBUG", `  stack: ${err.stack}`)
-      }
-      return {
-        content: [
-          {
-            type: "text",
-            text:
-              "INTERNAL_ERROR: the bridge failed to forward this call. " +
-              "Retry; if the failure persists, refresh the browser tab.",
-          },
-        ],
-        isError: true,
-      }
-    }
-  })
+  server.setRequestHandler(CallToolRequestSchema, (req, extra) =>
+    dispatchToolCall(
+      { session, pairing: { handleConnectWebConsole, handleWaitForPairing }, log },
+      req.params.name,
+      req.params.arguments ?? {},
+      extra.signal,
+    ),
+  )
 
   const transport = new StdioServerTransport()
   await server.connect(transport)

@@ -1122,3 +1122,143 @@ describe("BridgeSession — tool argument validation", () => {
     expect((await pending).isError).toBe(false)
   })
 })
+
+describe("BridgeSession — malformed tool_result", () => {
+  const malformed: Array<{ label: string; content: unknown }> = [
+    { label: "null", content: null },
+    { label: "a non-text item", content: [{ type: "image" }] },
+    { label: "a text item missing its text", content: [{ type: "text" }] },
+  ]
+
+  for (const { label, content } of malformed) {
+    it(`resolves BROWSER_PROTOCOL_ERROR when content is ${label}`, async () => {
+      // Given a paired session with an in-flight call
+      const { session } = makeSession()
+      const browser = makeFakeBrowser()
+      session.attachBrowser(browser.conn)
+      sendHello(session)
+      const result = session.callBrowserTool("list_cells", {})
+      const call = browser.sent.find((m) => m.type === "tool_call")
+      if (call?.type !== "tool_call") throw new Error("no tool_call")
+
+      // When the browser returns a malformed tool_result.content
+      session.handleMessage({
+        v: MCP_BRIDGE_VERSION,
+        type: "tool_result",
+        requestId: call.requestId,
+        content,
+        isError: false,
+      } as unknown as AnyMessage)
+
+      // Then the call resolves as a protocol error rather than crashing
+      const out = await result
+      expect(out.isError).toBe(true)
+      expect(out.content[0]?.text).toMatch(/BROWSER_PROTOCOL_ERROR/)
+    })
+  }
+})
+
+describe("BridgeSession — send failure", () => {
+  it("rejects the call and leaks no timer when browser.send throws", async () => {
+    // Given a paired session whose socket throws on a tool_call frame
+    vi.useFakeTimers()
+    const { session } = makeSession()
+    const conn: BrowserConn = {
+      send: (msg) => {
+        if (msg.type === "tool_call") throw new Error("socket dead")
+      },
+      close: () => {},
+      terminate: () => {},
+    }
+    session.attachBrowser(conn)
+    sendHello(session)
+    const baselineTimers = vi.getTimerCount()
+
+    // When a tool is dispatched
+    const result = session.callBrowserTool("list_cells", {})
+
+    // Then the promise rejects and the deadline timer is cleaned up
+    await expect(result).rejects.toThrow(/socket dead/)
+    expect(vi.getTimerCount()).toBe(baselineTimers)
+  })
+})
+
+describe("BridgeSession — unvalidatable schema (fail-open)", () => {
+  it("relays a tool whose schema cannot compile while still validating the others", async () => {
+    // Given a hello advertising one uncompilable schema and one valid tool
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session, "the-token", [
+      {
+        name: "bad_tool",
+        description: "x",
+        inputSchema: { type: "object", properties: { x: { type: "banana" } } },
+      },
+      {
+        name: "strict_tool",
+        description: "x",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: { n: { type: "number" } },
+          required: ["n"],
+        },
+      },
+    ])
+
+    // When the unvalidatable tool is called, then the valid one with bad args
+    const relayed = session.callBrowserTool("bad_tool", { anything: "goes" })
+    const relayedCall = browser.sent.find((m) => m.type === "tool_call")
+    const rejected = await session.callBrowserTool("strict_tool", { n: "nope" })
+
+    // Then the unvalidatable tool relays unvalidated; the valid one still validates
+    expect(relayedCall).toBeDefined()
+    expect(rejected.isError).toBe(true)
+    expect(rejected.content[0]?.text).toMatch(/VALIDATION_ERROR/)
+
+    if (relayedCall?.type === "tool_call") {
+      session.handleMessage({
+        v: MCP_BRIDGE_VERSION,
+        type: "tool_result",
+        requestId: relayedCall.requestId,
+        content: [{ type: "text", text: "{}" }],
+        isError: false,
+      })
+    }
+    expect((await relayed).isError).toBe(false)
+  })
+})
+
+describe("BridgeSession — timer lifecycle", () => {
+  it("settles a call once and leaks no timer on abort, dropping a late result", async () => {
+    // Given a paired session with one in-flight call
+    vi.useFakeTimers()
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    const baselineTimers = vi.getTimerCount()
+    const ac = new AbortController()
+    const result = session.callBrowserTool("list_cells", {}, ac.signal)
+    const call = browser.sent.find((m) => m.type === "tool_call")
+    if (call?.type !== "tool_call") throw new Error("no tool_call")
+    expect(vi.getTimerCount()).toBe(baselineTimers + 1)
+
+    // When the caller aborts and a late tool_result arrives for the same call
+    ac.abort()
+    session.handleMessage({
+      v: MCP_BRIDGE_VERSION,
+      type: "tool_result",
+      requestId: call.requestId,
+      content: [{ type: "text", text: "late" }],
+      isError: false,
+    })
+
+    // Then it settles once as cancelled, drops the late result, and leaks no timer
+    const out = await result
+    expect(out.isError).toBe(true)
+    expect(out.content[0]?.text).toMatch(/cancelled/)
+    expect(vi.getTimerCount()).toBe(baselineTimers)
+  })
+})

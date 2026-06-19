@@ -54,6 +54,34 @@ const open = (
     ws.once("error", (err) => reject(err))
   })
 
+const openWith = (
+  port: number,
+  opts: { token?: string; origin?: string; lastSessionId?: string } = {},
+): Promise<WebSocket> =>
+  new Promise<WebSocket>((resolve, reject) => {
+    const params = new URLSearchParams({ token: opts.token ?? TOKEN })
+    if (opts.lastSessionId) params.set("lastSessionId", opts.lastSessionId)
+    const headers: Record<string, string> = {}
+    if (opts.origin !== undefined) headers.origin = opts.origin
+    const ws = new WebSocket(`ws://127.0.0.1:${port}?${params.toString()}`, {
+      headers,
+    })
+    ws.once("open", () => resolve(ws))
+    ws.once("error", (err) => reject(err))
+  })
+
+const hello = (ws: WebSocket): void =>
+  send(ws, {
+    v: MCP_BRIDGE_VERSION,
+    type: "hello",
+    token: TOKEN,
+    userAgent: "test",
+    expectedBridgeVersion: MCP_BRIDGE_VERSION,
+    consoleOrigin: "http://127.0.0.1:9000",
+    tools: helloTools,
+    permissions: { read: true, write: true },
+  })
+
 const recv = (ws: WebSocket, timeoutMs = 1000): Promise<AnyMessage> =>
   new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error("recv timeout")), timeoutMs)
@@ -151,6 +179,58 @@ describe("WebSocket round-trip", () => {
     const bridge = await startBridge()
     teardown.push(bridge.stop)
     await expect(open(bridge.port, TOKEN, "http://attacker.com")).rejects.toThrow()
+  })
+
+  it("accepts a loopback-equivalent origin (localhost for a 127.0.0.1 console)", async () => {
+    // Given a bridge whose allowlist covers both loopback forms
+    const bridge = await startBridge()
+    teardown.push(bridge.stop)
+
+    // When a console connects from the localhost form
+    const ws = await openWith(bridge.port, { origin: "http://localhost:9000" })
+    hello(ws)
+    const ack = await recv(ws)
+
+    // Then the upgrade is accepted and pairing proceeds
+    expect(ack.type).toBe("hello_ack")
+    ws.close()
+  })
+
+  it("rejects a WS upgrade that omits the Origin header", async () => {
+    // Given a bridge
+    const bridge = await startBridge()
+    teardown.push(bridge.stop)
+
+    // When a client connects with no Origin header
+    // Then the upgrade is refused
+    await expect(openWith(bridge.port, { origin: undefined })).rejects.toThrow()
+  })
+
+  it("a reconnect echoing the issued sessionId takes over and closes the stale socket", async () => {
+    // Given a paired console (socket A) that received a sessionId
+    const bridge = await startBridge()
+    teardown.push(bridge.stop)
+    const a = await open(bridge.port)
+    hello(a)
+    const ack = await recv(a)
+    if (ack.type !== "hello_ack") throw new Error("no hello_ack")
+    const sessionId = ack.sessionId
+    const aClosed = new Promise<number>((resolve) => {
+      a.once("close", (code) => resolve(code))
+    })
+
+    // When a new socket connects echoing that sessionId and completes the handshake
+    const b = await openWith(bridge.port, {
+      lastSessionId: sessionId,
+      origin: "http://127.0.0.1:9000",
+    })
+    hello(b)
+    const ackB = await recv(b)
+
+    // Then the newcomer takes over and the stale socket is closed (not superseded)
+    expect(ackB.type).toBe("hello_ack")
+    await aClosed
+    b.close()
   })
 
   it("rejects second concurrent browser with 4001 superseded", async () => {

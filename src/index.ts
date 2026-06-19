@@ -9,6 +9,7 @@ import {
 } from "./wsServer.js"
 import { startMcpServer } from "./mcpServer.js"
 import { bindWithRetry, type AttemptListenFn } from "./bindWithRetry.js"
+import { createShutdownController } from "./shutdown.js"
 import { parseCli, parsePort } from "./cli.js"
 import { Logger } from "./logger.js"
 import { readFileSync, writeSync } from "node:fs"
@@ -160,48 +161,17 @@ const main = async () => {
   )
   log("INFO", `log level: ${logger.getLevelName()}`)
 
-  let shuttingDown = false
-  let exitCode = 0
   const SHUTDOWN_STEP_BUDGET_MS = 2_000
   const SHUTDOWN_HARD_BUDGET_MS = 5_000
-  const withTimeout = (
-    p: Promise<unknown>,
-    ms: number,
-  ): Promise<unknown> =>
-    Promise.race([
-      p.catch(() => undefined),
-      new Promise<void>((res) => setTimeout(res, ms).unref()),
-    ])
-  const shutdown = async () => {
-    if (shuttingDown) return
-    shuttingDown = true
-    const safety = setTimeout(
-      () => process.exit(1),
-      SHUTDOWN_HARD_BUDGET_MS,
-    ).unref()
-    try {
-      await withTimeout(mcp.stop(), SHUTDOWN_STEP_BUDGET_MS)
-    } catch (err) {
-      void err
-    }
-    if (stopWs) {
-      try {
-        await withTimeout(stopWs(), SHUTDOWN_STEP_BUDGET_MS)
-      } catch (err) {
-        void err
-      }
-    }
-    clearTimeout(safety)
-    process.exit(exitCode)
-  }
-
-  fatalShutdown = (kind, err) => {
-    log("ERROR", `fatal (${kind}):`, err.message)
-    if (kind === "fd-exhaustion") {
-      exitCode = 3
-    }
-    void shutdown()
-  }
+  const { shutdown, requestFatal } = createShutdownController({
+    stopMcp: () => mcp.stop(),
+    getStopWs: () => stopWs,
+    exit: (code: number) => process.exit(code),
+    log,
+    stepBudgetMs: SHUTDOWN_STEP_BUDGET_MS,
+    hardBudgetMs: SHUTDOWN_HARD_BUDGET_MS,
+  })
+  fatalShutdown = (kind, err) => void requestFatal(kind, err)
 
   process.on("SIGINT", () => void shutdown())
   process.on("SIGTERM", () => void shutdown())

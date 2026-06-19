@@ -84,6 +84,74 @@ const extractLastSessionId = (req: IncomingMessage): string | undefined => {
 const WS_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024
 const WS_OUTBOUND_BUFFER_LIMIT_BYTES = 4 * 1024 * 1024
 
+type SocketLike = {
+  readyState: number
+  bufferedAmount: number
+  send: (data: string) => void
+  close: (code: number, reason: string) => void
+  terminate: () => void
+}
+
+export const createBrowserConn = (
+  ws: SocketLike,
+  config: { log?: Log; bufferLimitBytes?: number },
+): BrowserConn => {
+  const bufferLimitBytes =
+    config.bufferLimitBytes ?? WS_OUTBOUND_BUFFER_LIMIT_BYTES
+  return {
+    send: (msg: AnyMessage) => {
+      if (ws.readyState !== WebSocket.OPEN) return
+      if (ws.bufferedAmount > bufferLimitBytes) {
+        config.log?.(
+          "WARN",
+          `outbound buffer overflow (${ws.bufferedAmount} bytes); terminating`,
+        )
+        try {
+          ws.terminate()
+        } catch (err) {
+          void err
+        }
+        return
+      }
+      ws.send(JSON.stringify(msg))
+    },
+    close: (code: number, reason: string) => {
+      try {
+        ws.close(code, reason)
+      } catch (err) {
+        void err
+      }
+    },
+    terminate: () => {
+      try {
+        ws.terminate()
+      } catch (err) {
+        void err
+      }
+    },
+  }
+}
+
+export const handleServerRuntimeError = (
+  err: Error & { code?: string },
+  config: { log?: Log; onFatalError?: (kind: FatalErrorKind, err: Error) => void },
+): void => {
+  const code = err.code
+  if (code === "EMFILE" || code === "ENFILE") {
+    config.log?.("ERROR", `httpServer FATAL: ${code} (file descriptor exhaustion).`)
+    if (config.onFatalError) {
+      config.onFatalError("fd-exhaustion", err)
+      return
+    }
+    config.log?.(
+      "WARN",
+      "  No onFatalError handler registered; continuing in degraded state.",
+    )
+    return
+  }
+  config.log?.("ERROR", "httpServer runtime error:", err)
+}
+
 export const startWsServer = (config: WsServerConfig) => {
   const httpServer: Server = createServer((_req, res) => {
     res.writeHead(404, { "content-type": "text/plain" })
@@ -128,38 +196,7 @@ export const startWsServer = (config: WsServerConfig) => {
   })
 
   wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
-    const conn: BrowserConn = {
-      send: (msg: AnyMessage) => {
-        if (ws.readyState !== WebSocket.OPEN) return
-        if (ws.bufferedAmount > WS_OUTBOUND_BUFFER_LIMIT_BYTES) {
-          config.log?.(
-            "WARN",
-            `outbound buffer overflow (${ws.bufferedAmount} bytes); terminating`,
-          )
-          try {
-            ws.terminate()
-          } catch (err) {
-            void err
-          }
-          return
-        }
-        ws.send(JSON.stringify(msg))
-      },
-      close: (code: number, reason: string) => {
-        try {
-          ws.close(code, reason)
-        } catch (err) {
-          void err
-        }
-      },
-      terminate: () => {
-        try {
-          ws.terminate()
-        } catch (err) {
-          void err
-        }
-      },
-    }
+    const conn = createBrowserConn(ws, { log: config.log })
 
     ws.on("error", (err) => {
       void err
@@ -226,23 +263,7 @@ export const startWsServer = (config: WsServerConfig) => {
     httpServer.listen(config.port, "127.0.0.1", () => {
       httpServer.removeListener("error", onBindError)
       httpServer.on("error", (err) => {
-        const code = (err as Error & { code?: string }).code
-        if (code === "EMFILE" || code === "ENFILE") {
-          config.log?.(
-            "ERROR",
-            `httpServer FATAL: ${code} (file descriptor exhaustion).`,
-          )
-          if (config.onFatalError) {
-            config.onFatalError("fd-exhaustion", err)
-            return
-          }
-          config.log?.(
-            "WARN",
-            "  No onFatalError handler registered; continuing in degraded state.",
-          )
-          return
-        }
-        config.log?.("ERROR", "httpServer runtime error:", err)
+        handleServerRuntimeError(err, config)
       })
       resolve({
         stop: () =>
