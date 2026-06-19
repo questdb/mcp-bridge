@@ -847,6 +847,80 @@ describe("BridgeSession — disconnect", () => {
     expect(out.content[0].text).toBe("late-but-ok")
   })
 
+  it("settles once and clears both timers when the deadline fires inside the grace window", async () => {
+    // Given a paired call carrying a 5s deadline that then loses its browser,
+    // the deadline timer AND the 30s grace timer are armed against the same
+    // promise at once — the subtlest double-settle hazard in the session.
+    vi.useFakeTimers()
+    const { session } = makeSession({ getDeadlineMs: () => 5_000 })
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    const result = session.callBrowserTool("run_cell", {})
+    const call = browser.sent.find((m) => m.type === "tool_call") as {
+      requestId: string
+    }
+    // Drop the browser: heartbeat stops, grace is scheduled, so the only
+    // pending timers are the deadline (5s) and the grace (30s).
+    session.handleSocketClose(browser.conn)
+    expect(vi.getTimerCount()).toBe(2)
+
+    // When the deadline fires before the grace window expires
+    vi.advanceTimersByTime(5_000)
+    const out = await result
+
+    // Then the call settles exactly once as a timeout, and clearInflight
+    // disarms BOTH timers — no leaked grace timer, and a late flush is dropped
+    // rather than re-settling the promise.
+    expect(out.isError).toBe(true)
+    expect(out.content[0].text).toMatch(/timeout/)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(() =>
+      session.handleMessage({
+        v: MCP_BRIDGE_VERSION,
+        type: "tool_result",
+        requestId: call.requestId,
+        content: [{ type: "text", text: "late" }],
+        isError: false,
+      }),
+    ).not.toThrow()
+  })
+
+  it("settles once and clears both timers when grace fires before a long deadline", async () => {
+    // The inverse race: a 60s deadline outlives the 30s grace window, so grace
+    // is the timer that fires while the deadline timer is still pending.
+    vi.useFakeTimers()
+    const { session } = makeSession({ getDeadlineMs: () => 60_000 })
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    const result = session.callBrowserTool("run_cell", {})
+    const call = browser.sent.find((m) => m.type === "tool_call") as {
+      requestId: string
+    }
+    session.handleSocketClose(browser.conn)
+    expect(vi.getTimerCount()).toBe(2)
+
+    // When the grace window expires before the deadline
+    vi.advanceTimersByTime(30_000)
+    const out = await result
+
+    // Then the call settles once with the unverified-disconnect warning and the
+    // still-pending deadline timer is cleared too — no leak, no second settle.
+    expect(out.isError).toBe(true)
+    expect(out.content[0].text).toMatch(/browser_disconnected/)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(() =>
+      session.handleMessage({
+        v: MCP_BRIDGE_VERSION,
+        type: "tool_result",
+        requestId: call.requestId,
+        content: [{ type: "text", text: "late" }],
+        isError: false,
+      }),
+    ).not.toThrow()
+  })
+
   it("fails a disconnect-spanning call after the grace window with an unverified-completion warning", async () => {
     vi.useFakeTimers()
     const { session } = makeSession({
