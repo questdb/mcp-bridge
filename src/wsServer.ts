@@ -75,6 +75,12 @@ const extractToken = (req: IncomingMessage): string | null => {
   return url.searchParams.get("token")
 }
 
+const extractLastSessionId = (req: IncomingMessage): string | undefined => {
+  if (!req.url) return undefined
+  const url = new URL(req.url, "http://placeholder")
+  return url.searchParams.get("lastSessionId") ?? undefined
+}
+
 const WS_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024
 const WS_OUTBOUND_BUFFER_LIMIT_BYTES = 4 * 1024 * 1024
 
@@ -121,7 +127,7 @@ export const startWsServer = (config: WsServerConfig) => {
     })
   })
 
-  wss.on("connection", (ws: WebSocket) => {
+  wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     const conn: BrowserConn = {
       send: (msg: AnyMessage) => {
         if (ws.readyState !== WebSocket.OPEN) return
@@ -159,7 +165,10 @@ export const startWsServer = (config: WsServerConfig) => {
       void err
     })
 
-    const accept = config.session.attachBrowser(conn)
+    const accept = config.session.attachBrowser(
+      conn,
+      extractLastSessionId(req),
+    )
     if (accept === "superseded") {
       ws.close(WS_CLOSE_CODES.superseded, "another_browser_connected")
       return

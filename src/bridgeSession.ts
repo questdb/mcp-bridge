@@ -233,15 +233,66 @@ export class BridgeSession {
     })
   }
 
-  attachBrowser(conn: BrowserConn): "accepted" | "superseded" {
+  attachBrowser(
+    conn: BrowserConn,
+    lastSessionId?: string,
+  ): "accepted" | "superseded" {
     if (this.browser) {
+      if (this.isReconnectOfLiveSession(lastSessionId)) {
+        this.resumeSessionOn(conn)
+        return "accepted"
+      }
       return "superseded"
     }
     this.browser = conn
+    this.armHelloTimer()
+    return "accepted"
+  }
+
+  // A reconnecting console echoes the sessionId we last issued to it; a
+  // different console cannot, never having received it. This is what tells a
+  // recoverable reconnect — the stale socket is dead but its close still lags
+  // the heartbeat pong-timeout — apart from a genuine second tab.
+  private isReconnectOfLiveSession(lastSessionId?: string): boolean {
+    return (
+      lastSessionId !== undefined &&
+      this.state === "S1" &&
+      lastSessionId === this.sessionId
+    )
+  }
+
+  private armHelloTimer(): void {
     this.helloTimer = setTimeout(() => {
       this.closeBrowser(WS_CLOSE_CODES.protocol_violation, "hello_timeout")
     }, HELLO_TIMEOUT_MS)
-    return "accepted"
+  }
+
+  // Re-open the handshake on the reconnected socket while keeping the in-flight
+  // calls and sessionId intact, so the console's queued tool_result still
+  // resolves the original call after the next hello_ack. Failing the calls here
+  // would invite a duplicate data-modifying retry.
+  private resumeSessionOn(conn: BrowserConn): void {
+    const stale = this.browser
+    this.stopHeartbeat()
+    if (this.closeFallbackTimer) {
+      clearTimeout(this.closeFallbackTimer)
+      this.closeFallbackTimer = null
+    }
+    if (this.helloTimer) {
+      clearTimeout(this.helloTimer)
+      this.helloTimer = null
+    }
+    // Adopt the new socket before terminating the stale one, so the stale
+    // close event is ignored by the `this.browser !== conn` guard.
+    this.browser = conn
+    this.connClosing = false
+    this.state = "S0"
+    stale?.terminate()
+    this.armHelloTimer()
+    this.config.log?.(
+      "INFO",
+      `reconnect takeover: stale socket replaced (session ${this.sessionId}), in-flight calls preserved`,
+    )
   }
 
   private closeBrowser(code: number, reason: string): void {
@@ -485,7 +536,10 @@ export class BridgeSession {
             expectedBridgeVersion: msg.expectedBridgeVersion,
           }
 
-    this.sessionId = generateSessionId()
+    // Kept across a reconnect (resumeSessionOn leaves it set) so the console's
+    // stored value stays valid; minted fresh for a first pairing or a re-pair
+    // after a real detach, where transitionToS0 nulled it.
+    this.sessionId = this.sessionId ?? generateSessionId()
     this.browserConsoleOrigin = msg.consoleOrigin
     this.browserTools = msg.tools
     this.rebuildToolValidators()

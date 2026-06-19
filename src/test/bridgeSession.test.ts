@@ -161,6 +161,56 @@ describe("BridgeSession — pairing handshake", () => {
     expect(session.attachBrowser(b.conn)).toBe("superseded")
   })
 
+  it("supersedes a second browser that presents a wrong or absent sessionId", () => {
+    const { session } = makeSession()
+    const a = makeFakeBrowser()
+    session.attachBrowser(a.conn)
+    sendHello(session)
+    const b = makeFakeBrowser()
+    expect(session.attachBrowser(b.conn, "not-the-session")).toBe("superseded")
+    expect(session.attachBrowser(b.conn, undefined)).toBe("superseded")
+    expect(a.terminated).toBe(false)
+  })
+
+  it("lets a reconnect with the issued sessionId take over the slot before the stale socket closes", async () => {
+    const { session } = makeSession({ getDeadlineMs: () => null })
+    const a = makeFakeBrowser()
+    session.attachBrowser(a.conn)
+    sendHello(session)
+    const snap = session.getPairingSnapshot()
+    if (!snap.paired) throw new Error("expected paired")
+    const sessionId = snap.sessionId
+
+    const result = session.callBrowserTool("list_cells", {})
+    const call = a.sent.find((m) => m.type === "tool_call") as {
+      requestId: string
+    }
+
+    // The stale socket is dead but its close has not fired yet — the reconnect
+    // arrives while `this.browser` still points at it.
+    const b = makeFakeBrowser()
+    expect(session.attachBrowser(b.conn, sessionId)).toBe("accepted")
+    expect(a.terminated).toBe(true)
+
+    sendHello(session)
+    expect(session.getState()).toBe("S1")
+    expect(b.sent.some((m) => m.type === "hello_ack")).toBe(true)
+    const after = session.getPairingSnapshot()
+    if (!after.paired) throw new Error("expected paired after takeover")
+    expect(after.sessionId).toBe(sessionId)
+
+    session.handleMessage({
+      v: MCP_BRIDGE_VERSION,
+      type: "tool_result",
+      requestId: call.requestId,
+      content: [{ type: "text", text: "ok" }],
+      isError: false,
+    })
+    const out = await result
+    expect(out.isError).toBe(false)
+    expect(out.content[0].text).toBe("ok")
+  })
+
   it("rejects malformed hello.tools without crashing", () => {
     for (const badTools of [
       null,
