@@ -308,6 +308,11 @@ export class BridgeSession {
   private closeBrowser(code: number, reason: string): void {
     const conn = this.browser
     if (!conn) return
+    // Gate handleMessage against frames buffered behind the close (ws.close()
+    // still delivers already-queued frames). Set on every close path —
+    // including the hello-timeout close armed in armHelloTimer — so a late
+    // buffered hello can't pair a connection we've already decided to drop.
+    this.connClosing = true
     conn.close(code, reason)
     if (this.closeFallbackTimer) clearTimeout(this.closeFallbackTimer)
     const timer = setTimeout(() => {
@@ -500,12 +505,10 @@ export class BridgeSession {
         WS_CLOSE_CODES.protocol_violation,
         "duplicate_hello",
       )
-      this.connClosing = true
       return
     }
     if (msg.token !== this.config.token) {
       this.closeBrowser(WS_CLOSE_CODES.token_invalid, "token_mismatch")
-      this.connClosing = true
       return
     }
 
@@ -514,7 +517,6 @@ export class BridgeSession {
         WS_CLOSE_CODES.protocol_violation,
         "malformed_hello_tools",
       )
-      this.connClosing = true
       return
     }
 
@@ -542,7 +544,6 @@ export class BridgeSession {
         WS_CLOSE_CODES.major_version_mismatch,
         "major_version_mismatch",
       )
-      this.connClosing = true
       return
     }
     this.incompatibleConsole = null

@@ -335,6 +335,23 @@ describe("BridgeSession — pairing handshake", () => {
     expect(browser.closed?.reason).toBe("hello_timeout")
   })
 
+  it("ignores a late hello buffered behind the hello-timeout close", () => {
+    // Given an attached browser whose hello-timeout close has fired
+    vi.useFakeTimers()
+    const { session } = makeSession()
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    vi.advanceTimersByTime(11_000)
+    expect(browser.closed?.reason).toBe("hello_timeout")
+
+    // When a hello arrives buffered behind that close (connClosing must gate it)
+    sendHello(session)
+
+    // Then it does not pair the connection we already decided to drop
+    expect(session.getState()).toBe("S0")
+    expect(browser.sent.find((m) => m.type === "hello_ack")).toBeUndefined()
+  })
+
   it("rejects a second browser that arrives BEFORE the first sent hello (single-owner)", () => {
     const { session } = makeSession()
     const a = makeFakeBrowser()
@@ -561,6 +578,66 @@ describe("BridgeSession — tool calls", () => {
     expect(out.content[0].text).toMatch(/timeout/)
     const cancel = browser.sent.find((m) => m.type === "cancel")
     expect(cancel).toBeTruthy()
+  })
+
+  it("settles once and leaks no timer on deadline, dropping a late result", async () => {
+    // Given a paired session with one in-flight call carrying a deadline
+    vi.useFakeTimers()
+    const { session } = makeSession({ getDeadlineMs: () => 100 })
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    const baselineTimers = vi.getTimerCount()
+    const result = session.callBrowserTool("instant_thing", {})
+    const call = browser.sent.find((m) => m.type === "tool_call")
+    if (call?.type !== "tool_call") throw new Error("no tool_call")
+    expect(vi.getTimerCount()).toBe(baselineTimers + 1)
+
+    // When the deadline fires and the console flushes a late result afterwards
+    vi.advanceTimersByTime(200)
+    const out = await result
+    expect(out.isError).toBe(true)
+    expect(out.content[0].text).toMatch(/timeout/)
+
+    // Then the late result is dropped, the promise does not re-settle, and the
+    // deadline timer is gone (no leak)
+    expect(vi.getTimerCount()).toBe(baselineTimers)
+    expect(() =>
+      session.handleMessage({
+        v: MCP_BRIDGE_VERSION,
+        type: "tool_result",
+        requestId: call.requestId,
+        content: [{ type: "text", text: "late" }],
+        isError: false,
+      }),
+    ).not.toThrow()
+  })
+
+  it("removes the abort listener when a call settles via deadline", async () => {
+    // Given an in-flight call with both a deadline and a caller signal
+    vi.useFakeTimers()
+    const { session } = makeSession({ getDeadlineMs: () => 100 })
+    const browser = makeFakeBrowser()
+    session.attachBrowser(browser.conn)
+    sendHello(session)
+    const ac = new AbortController()
+    const result = session.callBrowserTool("instant_thing", {}, ac.signal)
+
+    // When the deadline settles the call, then the caller aborts afterwards
+    vi.advanceTimersByTime(200)
+    const out = await result
+    expect(out.isError).toBe(true)
+    expect(out.content[0].text).toMatch(/timeout/)
+    const cancelsAfterTimeout = browser.sent.filter(
+      (m) => m.type === "cancel",
+    ).length
+    ac.abort()
+
+    // Then the abort handler does not fire again (listener was removed) — no
+    // second cancel is emitted
+    expect(browser.sent.filter((m) => m.type === "cancel").length).toBe(
+      cancelsAfterTimeout,
+    )
   })
 
   it("timeout result carries do-not-retry guidance for data-modifying calls", async () => {
