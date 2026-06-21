@@ -23,7 +23,7 @@
   ],
   "type": "module",
   "bin": {
-    "questdb-mcp-bridge": "dist/index.js"
+    "questdb-mcp-bridge": "./dist/index.js"
   },
   "scripts": {
     "build": "rimraf dist && tsc -p tsconfig.build.json && cp -R src/consts dist/consts && chmod +x dist/index.js",
