@@ -46,6 +46,7 @@ const USAGE = `@questdb/mcp-bridge — bridge coding agents to a running QuestDB
 
 Usage:
   npx @questdb/mcp-bridge [start]    Start the bridge (default when no command is given)
+  npx @questdb/mcp-bridge setup      Configure the bridge for your coding agents (interactive)
   npx @questdb/mcp-bridge --version  Print the version and exit
   npx @questdb/mcp-bridge --help     Print this help and exit
 `
@@ -76,6 +77,12 @@ if (cli.kind === "exit") {
   if (cli.stdout !== undefined) writeFd(process.stdout.fd, cli.stdout)
   if (cli.stderr !== undefined) writeFd(process.stderr.fd, cli.stderr)
   process.exit(cli.code)
+}
+
+if (cli.kind === "setup") {
+  const { runSetup } = await import("./setup/runSetup.js")
+  const code = await runSetup()
+  process.exit(code)
 }
 
 const logger = new Logger()

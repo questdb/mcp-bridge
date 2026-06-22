@@ -4,6 +4,7 @@
 
 export type CliOutcome =
   | { kind: "start" }
+  | { kind: "setup" }
   | { kind: "exit"; code: number; stdout?: string; stderr?: string }
 
 // Pure mapping from argv to an outcome. The caller performs the actual writes
@@ -17,6 +18,8 @@ export const parseCli = (
   const command = argv[0]
 
   if (command === undefined || command === "start") return { kind: "start" }
+
+  if (command === "setup") return { kind: "setup" }
 
   if (command === "-v" || command === "--version") {
     return { kind: "exit", code: 0, stdout: `${version}\n` }

@@ -7,7 +7,29 @@ browser against your already-established QuestDB session.
 
 ## Setup
 
-Add to your MCP client's config (e.g. `~/.claude/.mcp.json`):
+### Quick setup (recommended)
+
+The interactive wizard detects your installed coding agents and
+writes the bridge into each one's MCP config:
+
+```bash
+npx @questdb/mcp-bridge setup
+```
+
+It walks you through two steps:
+
+1. **Pick agents**: multi-select from the ones it detects (Claude Code,
+   Codex, Cursor, OpenCode, Gemini CLI).
+2. **Review settings**: optionally override `CONSOLE_ORIGIN` and
+   `MCP_BRIDGE_PORT`; press Enter to keep the defaults.
+
+The wizard pins each agent's config to the bridge version that ran it. Your
+QuestDB Web Console expects a specific bridge version. If you're on an older
+console, run the matching version: `npx @questdb/mcp-bridge@<version> setup`. The config it writes will launch that same version. (When unsure, pair first; on a version mismatch the agent is told which version to switch to.)
+
+### Manual setup
+
+Or add it to your MCP client's config by hand (e.g. `~/.claude/.mcp.json`):
 
 ```json
 {
@@ -39,6 +61,7 @@ rarely invoke it by hand. When you do:
 | ----------------------------------- | ---------------------------------------- |
 | `npx @questdb/mcp-bridge` (no args) | Start the bridge — same as `start`.      |
 | `npx @questdb/mcp-bridge start`     | Start the bridge.                        |
+| `npx @questdb/mcp-bridge setup`     | Interactively configure the bridge for your coding agents. |
 | `npx @questdb/mcp-bridge --version` | Print the version and exit. Alias: `-v`. |
 | `npx @questdb/mcp-bridge --help`    | Print this help and exit. Alias: `-h`.   |
 
