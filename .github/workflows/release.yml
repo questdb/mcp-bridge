@@ -1,0 +1,130 @@
+name: Release MCP Bridge
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to NPM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: corepack enable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "yarn"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build
+        run: yarn build
+
+      - name: Get package version
+        id: get-version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Publishing version: $VERSION"
+
+      - name: Extract changelog for version
+        id: extract-changelog
+        env:
+          VERSION: ${{ steps.get-version.outputs.version }}
+        run: |
+          node << 'SCRIPT'
+          const fs = require('fs');
+          const version = process.env.VERSION;
+
+          const content = fs.readFileSync('CHANGELOG.md', 'utf8');
+          const lines = content.split('\n');
+
+          let capturing = false;
+          let result = [];
+
+          for (const line of lines) {
+            if (line.trim().startsWith('## ')) {
+              if (capturing) {
+                break;
+              }
+              if (line.trim() === `## ${version}` || line.trim().startsWith(`## ${version} `)) {
+                capturing = true;
+                continue;
+              }
+            } else if (capturing) {
+              result.push(line);
+            }
+          }
+
+          const changelog = result.join('\n').trim();
+
+          if (!changelog) {
+            console.log(`Warning: No changelog found for version ${version}`);
+          } else {
+            console.log('Extracted changelog:');
+            console.log(changelog);
+          }
+
+          const crypto = require('crypto');
+          const delimiter = `EOF_${crypto.randomBytes(16).toString('hex')}`;
+          const outputFile = process.env.GITHUB_OUTPUT;
+          fs.appendFileSync(outputFile, `changelog<<${delimiter}\n${changelog}\n${delimiter}\n`);
+          SCRIPT
+
+      - name: Check if version exists on npm
+        id: check-version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view @questdb/mcp-bridge@$VERSION version 2>/dev/null; then
+            echo "Version $VERSION already exists on npm"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Version $VERSION does not exist on npm"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish to npm
+        if: steps.check-version.outputs.exists == 'false'
+        run: npm publish --provenance --access public
+
+      - name: Create GitHub Release
+        if: steps.check-version.outputs.exists == 'false'
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ steps.get-version.outputs.version }}
+          CHANGELOG: ${{ steps.extract-changelog.outputs.changelog }}
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const changelog = process.env.CHANGELOG || '';
+
+            const body = [
+              `## @questdb/mcp-bridge v${version}`,
+              '',
+              changelog || '_No changelog found for this release._',
+              '',
+              `[npm](https://www.npmjs.com/package/@questdb/mcp-bridge/v/${version})`
+            ].join('\n');
+
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${version}`,
+              name: `v${version}`,
+              body,
+              draft: false,
+              prerelease: false
+            });
+
+            console.log(`Created release v${version}`);
