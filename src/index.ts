@@ -33,7 +33,7 @@ const PER_TOOL_TIMEOUT_MS: Record<string, number> = {
   set_cell_mode: 15_000,
   set_cell_chart_config: 15_000,
   set_cell_autorefresh: 15_000,
-  set_cell_chart_maximized: 15_000,
+  set_cell_view_maximized: 15_000,
   set_cell_maximized: 15_000,
   list_cells: 15_000,
   get_cell: 15_000,
@@ -47,6 +47,7 @@ const USAGE = `@questdb/mcp-bridge — bridge coding agents to a running QuestDB
 Usage:
   npx @questdb/mcp-bridge [start]    Start the bridge (default when no command is given)
   npx @questdb/mcp-bridge setup      Configure the bridge for your coding agents (interactive)
+  npx @questdb/mcp-bridge upgrade    Re-pin existing coding-agent configs to this version
   npx @questdb/mcp-bridge --version  Print the version and exit
   npx @questdb/mcp-bridge --help     Print this help and exit
 `
@@ -82,6 +83,12 @@ if (cli.kind === "exit") {
 if (cli.kind === "setup") {
   const { runSetup } = await import("./setup/runSetup.js")
   const code = await runSetup()
+  process.exit(code)
+}
+
+if (cli.kind === "upgrade") {
+  const { runUpgrade } = await import("./setup/runUpgrade.js")
+  const code = await runUpgrade()
   process.exit(code)
 }
 
@@ -162,10 +169,7 @@ const main = async () => {
   log("INFO", `@questdb/mcp-bridge v${MCP_BRIDGE_VERSION}`)
   log("INFO", `listening on ws://127.0.0.1:${port}`)
   log("INFO", `console origin: ${consoleOrigin}`)
-  log(
-    "INFO",
-    `log file: ${logger.getFilePath() ?? "(disabled — stderr only)"}`,
-  )
+  log("INFO", `log file: ${logger.getFilePath() ?? "(disabled — stderr only)"}`)
   log("INFO", `log level: ${logger.getLevelName()}`)
 
   const SHUTDOWN_STEP_BUDGET_MS = 2_000

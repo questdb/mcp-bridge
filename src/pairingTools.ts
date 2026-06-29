@@ -1,8 +1,4 @@
-import type {
-  MCPPermissions,
-  ToolResultPayload,
-  ToolSchema,
-} from "./types.js"
+import type { MCPPermissions, ToolResultPayload, ToolSchema } from "./types.js"
 
 export const CONNECT_TOOL: ToolSchema = {
   name: "get_pairing_credentials",
@@ -44,9 +40,10 @@ export const WAIT_TOOL: ToolSchema = {
     "maxRetriesHint:10}` on timeout — call again to keep waiting (up " +
     "to ~10 retries / ~8 min) until the user pairs. " +
     "If the bridge version doesn't match what the web console expects, " +
-    "the success payload includes a `warning` plus a pre-rendered " +
-    "`userMessage`; show the `userMessage` to the user verbatim before " +
-    "proceeding. " +
+    "the success payload includes a `warning`, a pre-rendered `userMessage`, " +
+    "and `assistantNextActions`; you MUST show the `userMessage` to the user " +
+    "verbatim AND suggest running the `npx @questdb/mcp-bridge@<version> " +
+    "upgrade` command (offer to run it for them) before proceeding. " +
     "If pairing is refused outright for an incompatible bridge, the result " +
     "is `{paired:false, reason:'incompatible_bridge', userMessage, " +
     "assistantNextActions}` — show the `userMessage` verbatim and STOP " +
@@ -126,15 +123,33 @@ const RECOMMENDED_MAX_RETRIES = 10
 // the exact npm version the console was verified against, so it doubles as the
 // pin to install.
 const buildVersionUserMessage = (m: VersionMismatch): string =>
-  `Version mismatch: this MCP bridge is @questdb/mcp-bridge v${m.bridgeVersion}, ` +
-  `but the QuestDB Web Console expects v${m.expectedBridgeVersion}. ` +
-  `Update your MCP server command to \`npx @questdb/mcp-bridge@${m.expectedBridgeVersion} start\`, ` +
-  `restart your coding agent, then pair again.`
+  `Web Console expects @questdb/mcp-bridge v${m.expectedBridgeVersion} but ` +
+  `you're running v${m.bridgeVersion}. Run ` +
+  `\`npx @questdb/mcp-bridge@${m.expectedBridgeVersion} upgrade\`, then restart ` +
+  `this coding agent (the running bridge keeps the old version until restart).`
 
 const buildVersionWarning = (m: VersionMismatch): string =>
   `version_mismatch (bridge v${m.bridgeVersion} vs console-expected ` +
-  `v${m.expectedBridgeVersion}): show the \`userMessage\` field to the user ` +
-  `verbatim before proceeding. Some tools may not work properly until the correct bridge version is used.`
+  `v${m.expectedBridgeVersion}): show the \`userMessage\` to the user verbatim ` +
+  `and offer to run the upgrade command for them. Newer features (e.g. naming ` +
+  `cells) need the matching bridge; existing tools keep working meanwhile.`
+
+// Ordered imperatives so weaker models can't skim past the prose `warning`:
+// they MUST tell the user and MUST surface the `upgrade` command as a suggestion.
+const buildVersionMismatchActions = (m: VersionMismatch): string[] => [
+  "You MUST show the `userMessage` text to the user verbatim — they need to know the bridge is out of date.",
+  `You MUST suggest running \`npx @questdb/mcp-bridge@${m.expectedBridgeVersion} upgrade\` and offer to run it for them — it re-pins your coding-agent config to the matching bridge version.`,
+  "After it succeeds, tell the user to restart this coding agent so the upgraded bridge launches (the running process stays on the old version until restart).",
+]
+
+const attachVersionMismatch = (
+  payload: Record<string, unknown>,
+  m: VersionMismatch,
+): void => {
+  payload.warning = buildVersionWarning(m)
+  payload.userMessage = buildVersionUserMessage(m)
+  payload.assistantNextActions = buildVersionMismatchActions(m)
+}
 
 // Returned when the console tried to pair but its expected bridge major differs
 // — pairing was refused, so this is a terminal error for the agent: surface the
@@ -150,7 +165,8 @@ const buildIncompatiblePayload = (inc: VersionMismatch): ToolResultPayload => ({
         userMessage: buildVersionUserMessage(inc),
         assistantNextActions: [
           "Show the `userMessage` text to the user verbatim.",
-          `Tell them to set their MCP server command to \`npx @questdb/mcp-bridge@${inc.expectedBridgeVersion} start\` and restart this coding agent.`,
+          `Offer to run \`npx @questdb/mcp-bridge@${inc.expectedBridgeVersion} upgrade\` for them — it re-pins your coding-agent config to the matching bridge version.`,
+          "After it succeeds, have them restart this coding agent so the new bridge launches.",
           "Stop calling wait_for_pairing — pairing cannot succeed until the bridge version is updated.",
         ],
       }),
@@ -179,13 +195,10 @@ export const createPairingToolHandlers = (
           "Already paired with the QuestDB Web Console; notebook tools are available.",
       }
       if (state.versionMismatch) {
-        payload.warning = buildVersionWarning(state.versionMismatch)
-        payload.userMessage = buildVersionUserMessage(state.versionMismatch)
+        attachVersionMismatch(payload, state.versionMismatch)
       }
       return {
-        content: [
-          { type: "text", text: JSON.stringify(payload) },
-        ],
+        content: [{ type: "text", text: JSON.stringify(payload) }],
       }
     }
     const url = ctx.buildDeepLink()
@@ -252,8 +265,7 @@ export const createPairingToolHandlers = (
         permissions: initial.permissions,
       }
       if (initial.versionMismatch) {
-        payload.warning = buildVersionWarning(initial.versionMismatch)
-        payload.userMessage = buildVersionUserMessage(initial.versionMismatch)
+        attachVersionMismatch(payload, initial.versionMismatch)
       }
       return {
         content: [{ type: "text", text: JSON.stringify(payload) }],
@@ -270,8 +282,7 @@ export const createPairingToolHandlers = (
         permissions: result.permissions,
       }
       if (result.versionMismatch) {
-        payload.warning = buildVersionWarning(result.versionMismatch)
-        payload.userMessage = buildVersionUserMessage(result.versionMismatch)
+        attachVersionMismatch(payload, result.versionMismatch)
       }
       return {
         content: [{ type: "text", text: JSON.stringify(payload) }],

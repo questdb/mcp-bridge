@@ -5,6 +5,7 @@
 export type CliOutcome =
   | { kind: "start" }
   | { kind: "setup" }
+  | { kind: "upgrade" }
   | { kind: "exit"; code: number; stdout?: string; stderr?: string }
 
 // Pure mapping from argv to an outcome. The caller performs the actual writes
@@ -20,6 +21,8 @@ export const parseCli = (
   if (command === undefined || command === "start") return { kind: "start" }
 
   if (command === "setup") return { kind: "setup" }
+
+  if (command === "upgrade") return { kind: "upgrade" }
 
   if (command === "-v" || command === "--version") {
     return { kind: "exit", code: 0, stdout: `${version}\n` }
@@ -38,10 +41,7 @@ export const parseCli = (
   }
 }
 
-export type PortChoice =
-  | { auto: true }
-  | { pinned: number }
-  | { error: string }
+export type PortChoice = { auto: true } | { pinned: number } | { error: string }
 
 // Validate MCP_BRIDGE_PORT. Unset/empty → auto-allocate; a valid 1-65535 integer
 // → pinned; anything else → an error the caller turns into a fatal exit(2).

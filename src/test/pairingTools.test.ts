@@ -132,8 +132,18 @@ describe("get_pairing_credentials handler", () => {
     expect(parsed.warning as string).toContain("0.1.0")
     expect(parsed.warning as string).toContain("0.2.0")
     expect(parsed.userMessage as string).toContain(
-      "npx @questdb/mcp-bridge@0.2.0 start",
+      "npx @questdb/mcp-bridge@0.2.0 upgrade",
     )
+    const actions = parsed.assistantNextActions as string[]
+    expect(Array.isArray(actions)).toBe(true)
+    expect(actions.some((a) => /show .*userMessage.* verbatim/i.test(a))).toBe(
+      true,
+    )
+    expect(
+      actions.some((a) =>
+        a.includes("npx @questdb/mcp-bridge@0.2.0 upgrade"),
+      ),
+    ).toBe(true)
   })
 
   it("returns an actionable incompatible_bridge error when the console was refused", () => {
@@ -155,7 +165,7 @@ describe("get_pairing_credentials handler", () => {
     expect(parsed.reason).toBe("incompatible_bridge")
     expect(parsed.userMessage as string).toContain("v1.4.0")
     expect(parsed.userMessage as string).toContain(
-      "npx @questdb/mcp-bridge@2.0.0 start",
+      "npx @questdb/mcp-bridge@2.0.0 upgrade",
     )
     expect(Array.isArray(parsed.assistantNextActions)).toBe(true)
   })
@@ -246,8 +256,18 @@ describe("wait_for_pairing handler", () => {
     expect(parsed.warning as string).toContain("0.1.0")
     expect(parsed.warning as string).toContain("0.2.0")
     expect(parsed.userMessage as string).toContain(
-      "npx @questdb/mcp-bridge@0.2.0 start",
+      "npx @questdb/mcp-bridge@0.2.0 upgrade",
     )
+    const actions = parsed.assistantNextActions as string[]
+    expect(Array.isArray(actions)).toBe(true)
+    expect(actions.some((a) => /show .*userMessage.* verbatim/i.test(a))).toBe(
+      true,
+    )
+    expect(
+      actions.some((a) =>
+        a.includes("npx @questdb/mcp-bridge@0.2.0 upgrade"),
+      ),
+    ).toBe(true)
   })
 
   it("returns an actionable incompatible_bridge error when waitForPair reports incompatible", async () => {
@@ -270,7 +290,7 @@ describe("wait_for_pairing handler", () => {
     expect(parsed.paired).toBe(false)
     expect(parsed.reason).toBe("incompatible_bridge")
     expect(parsed.userMessage as string).toContain(
-      "npx @questdb/mcp-bridge@2.0.0 start",
+      "npx @questdb/mcp-bridge@2.0.0 upgrade",
     )
   })
 
