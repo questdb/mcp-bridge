@@ -1,6 +1,6 @@
 {
   "name": "@questdb/mcp-bridge",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "MCP bridge that exposes the QuestDB Web Console notebook to external coding agents (Claude Code, Codex) over a local WebSocket.",
   "license": "Apache-2.0",
   "author": "QuestDB",
