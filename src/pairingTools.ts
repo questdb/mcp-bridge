@@ -126,8 +126,7 @@ const buildVersionUserMessage = (m: VersionMismatch): string =>
   `Web Console expects @questdb/mcp-bridge v${m.expectedBridgeVersion} but ` +
   `you're running v${m.bridgeVersion}. Run ` +
   `\`npx @questdb/mcp-bridge@${m.expectedBridgeVersion} upgrade\`, then restart ` +
-  `this coding agent (the running bridge keeps the old version until restart). ` +
-  `Want me to run it for you?`
+  `this coding agent (the running bridge keeps the old version until restart).`
 
 const buildVersionWarning = (m: VersionMismatch): string =>
   `version_mismatch (bridge v${m.bridgeVersion} vs console-expected ` +
