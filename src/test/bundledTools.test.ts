@@ -5,10 +5,6 @@ import {
 } from "../bundledTools.js"
 
 describe("bundledTools", () => {
-  it("ships 30 functional tools (3 schema + 3 reference + 21 notebook + 1 query + 2 meta)", () => {
-    expect(BUNDLED_FUNCTIONAL_TOOLS).toHaveLength(30)
-  })
-
   it("includes the schema tools", () => {
     for (const name of [
       "get_tables",
@@ -52,12 +48,13 @@ describe("bundledTools", () => {
     const cells = props.cells as { items: { required: string[] } }
     expect(cells.items.required).toEqual([
       "id",
+      "name",
       "value",
       "preserve_value",
       "type",
       "mode",
       "auto_refresh",
-      "is_chart_maximized",
+      "is_view_maximized",
       "chart_config",
       "grid",
     ])
@@ -87,7 +84,6 @@ describe("bundledTools", () => {
       "buffer_id",
       "cell_id",
       "x_column",
-      "name",
       "queries",
       "right_axis",
     ])

@@ -129,6 +129,22 @@ export const readRawFile = async (filePath: string): Promise<string> => {
   }
 }
 
+// Like readRawFile, but distinguishes the two reasons a read can come up empty:
+// a missing file (ENOENT → null; the agent simply isn't configured) versus a
+// real read error (permissions, a directory in the path), which is rethrown so
+// the caller can report a failure instead of silently skipping a config that
+// may still pin the bridge.
+export const readRawFileOrNull = async (
+  filePath: string,
+): Promise<string | null> => {
+  try {
+    return await readFile(filePath, "utf-8")
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw err
+  }
+}
+
 export const writeRawFile = async (
   filePath: string,
   content: string,
